@@ -6,8 +6,6 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 COPY app /srv/myapp_prod
 COPY app /srv/myapp_staging
-# Staging runs without control app: the check falls back on process checks.
-RUN sed -i '/activate_control_app/d' /srv/myapp_staging/config/puma.rb \
- && mkdir -p /srv/myapp_prod/tmp/pids /srv/myapp_staging/tmp/pids
+RUN mkdir -p /srv/myapp_prod/tmp/pids /srv/myapp_staging/tmp/pids
 COPY check-puma /usr/local/bin/check-puma
 CMD ["sleep", "infinity"]

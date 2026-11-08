@@ -55,11 +55,21 @@ Workers report their thread pool to the master at checkin, every 5 seconds: busy
 `config/puma.rb`:
 
 ```ruby
-state_path "tmp/pids/puma.state"
-activate_control_app "unix://tmp/sockets/pumactl.sock", auth_token: ENV.fetch("PUMA_CONTROL_TOKEN")
+# Monitoring (check-puma): state file and read-only control app
+if ENV['PUMA_CONTROL_PORT']
+  state_path 'tmp/pids/puma.state'
+  activate_control_app "tcp://127.0.0.1:#{ENV['PUMA_CONTROL_PORT']}", data_only: true
+end
 ```
 
-Started with `--tag {app}_{env}`. The env is what follows the last underscore: `my_app_prod` → app `my_app`, env `prod`.
+- One control port per instance, set in its systemd unit (`Environment=PUMA_CONTROL_PORT=9293`): `myapp_prod` and `myapp_staging` on the same host need different ports. The check reads the URL from the state file, it does not need to know the ports.
+- `data_only: true` restricts the control app to the read-only endpoints (`/stats`, `/gc-stats`…): without it, `/stop`, `/halt` or `/restart` are reachable by any local user holding the token.
+- No `auth_token`: Puma generates one at boot and writes it in the state file, where the check reads it.
+- `tmp/pids` must be shared between releases (Capistrano `linked_dirs`).
+
+A unix socket control app (`unix://tmp/pids/pumactl.sock`) is supported too, but the Sensu agent then needs write permission on the socket.
+
+Puma is started in cluster mode with `--tag {app}_{env}`. The env is what follows the last underscore: `my_app_prod` → app `my_app`, env `prod`.
 
 ## State file location
 
@@ -70,7 +80,11 @@ check-puma --state-pattern '/var/www/{tag}/shared/tmp/pids/puma.state'
 check-puma --state-pattern '/home/{app}/{env}/shared/tmp/pids/puma.state'
 ```
 
-The Sensu agent user must be able to read the state file (it holds the control token) and to connect to the control socket (write permission on a unix socket): add it to the group of the application user, or bind the control app on `tcp://127.0.0.1:<port>`.
+With a TCP control app, the Sensu agent user only needs to read the state file (it holds the control token) and to traverse its parent directories. Puma writes it with the process umask, usually world readable. To check:
+
+```sh
+sudo -u sensu check-puma --state-pattern '/var/www/{tag}/shared/tmp/pids/puma.state' --expect myapp_prod
+```
 
 ## Usage
 

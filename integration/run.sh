@@ -12,8 +12,10 @@ trap 'docker stop -t 1 "$container" >/dev/null' EXIT
 
 dx() { docker exec "$container" "$@"; }
 
-start() { # <tag> <port>
-  docker exec -d -w "/srv/$1" -e PORT="$2" "$container" puma -C config/puma.rb --tag "$1"
+start() { # <tag> <port> [control port]
+  local env=(-e PORT="$2")
+  [[ -n ${3:-} ]] && env+=(-e PUMA_CONTROL_PORT="$3")
+  docker exec -d -w "/srv/$1" "${env[@]}" "$container" puma -C config/puma.rb --tag "$1"
 }
 
 # Waits until both workers of an instance are listed.
@@ -28,7 +30,8 @@ wait_workers() { # <tag>
 }
 
 echo "$(dx puma --version)"
-start myapp_prod 3000
+# Staging runs without control app: the check falls back on process checks.
+start myapp_prod 3000 9293
 start myapp_staging 3001
 wait_workers myapp_prod
 wait_workers myapp_staging
@@ -54,6 +57,17 @@ expect 2 --expect myapp_prod,myapp_staging,other_prod
 
 # Unprivileged agent: master cwd unreadable, stats skipped, process checks only.
 expect 0 --as=nobody --expect myapp_prod,myapp_staging
+# Unprivileged agent with the state file path: stats through the TCP control app.
+expect 0 --as=nobody --expect myapp_prod,myapp_staging --state-pattern '/srv/{tag}/tmp/pids/puma.state'
+
+# data_only: the control app refuses the commands changing the server state.
+token=$(dx sed -n 's/^control_auth_token: *//p' /srv/myapp_prod/tmp/pids/puma.state)
+code=$(dx curl -s -o /dev/null -w '%{http_code}' "localhost:9293/stop?token=$token")
+if [[ $code == 200 ]]; then
+  echo "FAIL control app /stop answered $code despite data_only"; failures=$((failures + 1))
+else
+  echo "ok   control app /stop refused ($code)"
+fi
 
 # Thread saturation: 2 workers x 2 threads, 4 slow requests (8s). Workers report
 # their thread pool at checkin (every 5s): check after the next one.
