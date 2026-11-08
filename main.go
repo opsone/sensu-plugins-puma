@@ -169,9 +169,12 @@ func collect(inst *puma.Instance) Report {
 	}
 	st, err := puma.ReadState(path)
 	switch {
-	case errors.Is(err, fs.ErrNotExist) && plugin.StatePattern == "":
-		// Default location: the app may simply not use a state file.
+	case errors.Is(err, fs.ErrNotExist):
+		// The app may simply not use a state file: process checks only.
 		r.Note = "no " + defaultStateFile
+		if plugin.StatePattern != "" {
+			r.Note = "no " + path
+		}
 		return r
 	case errors.Is(err, puma.ErrNoControlApp):
 		r.Note = "no control app"
