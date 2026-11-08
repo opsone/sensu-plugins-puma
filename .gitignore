@@ -1,0 +1,3 @@
+dist/
+/check-puma
+/integration/check-puma
