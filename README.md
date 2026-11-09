@@ -66,7 +66,7 @@ if ENV['PUMA_CONTROL_PORT']
 end
 ```
 
-- One control port per instance, set in its systemd unit (`Environment=PUMA_CONTROL_PORT=9293`): `myapp_prod` and `myapp_staging` on the same host need different ports. The check reads the URL from the state file, it does not need to know the ports.
+- One control port per instance, set in its systemd unit (`Environment=PUMA_CONTROL_PORT=9293`): `myapp_prod` and `myapp_staging` on the same host need different ports. Convention: `9293` (the `pumactl` default) for the first instance of a host, then `9294`, `9295`… for the next ones. Avoid `3000`/`3001`, often taken by the applications themselves. The check reads the URL from the state file, it does not need to know the ports.
 - `data_only: true` restricts the control app to the read-only endpoints (`/stats`, `/gc-stats`…): without it, `/stop`, `/halt` or `/restart` are reachable by any local user holding the token.
 - No `auth_token`: Puma generates one at boot and writes it in the state file, where the check reads it.
 - `tmp/pids` must be shared between releases (Capistrano `linked_dirs`).
