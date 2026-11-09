@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.0] - 2026-11-09
 
 ### Changed
 - `--state-pattern` replaced by `--state-glob` (repeatable): state files are matched to the instances by master PID, the deployment directory no longer needs to match the Puma tag. Stale state files are ignored, unreadable ones are a warning when a checked instance has no state file.
