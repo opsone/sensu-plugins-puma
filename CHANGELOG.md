@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.3.0] - 2026-11-09
 
 ### Changed
 - Renamed `check-puma` to `check-puma-status`, after the naming rule of the Opsone plugins (the check reads the Puma status page).
