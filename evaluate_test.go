@@ -89,10 +89,10 @@ func TestEvaluate(t *testing.T) {
 			contains: "myapp_staging CRITICAL: not running",
 		},
 		{
-			name:     "unexpected instance is flagged, not alerted",
+			name:     "instance not expected is ignored",
 			expected: []string{"other_prod"},
 			state:    sensu.CheckStateCritical,
-			contains: "myapp_prod OK: 2 worker(s), 2/2 booted, threads 1/10 busy, backlog 0, rss max 300MB (not expected)",
+			contains: "1/1 instance(s) in trouble\nother_prod CRITICAL: not running\nignored: myapp_prod",
 		},
 		{
 			name: "master gone, orphan workers",
@@ -267,6 +267,30 @@ func TestEvaluate(t *testing.T) {
 				t.Errorf("evaluate() = %d %q\nwant %d containing %q", got.State, got.Message, tt.state, tt.contains)
 			}
 		})
+	}
+}
+
+func TestEvaluateIgnored(t *testing.T) {
+	staging := healthy("myapp_staging")
+	staging.Instance.Workers = nil // would be CRITICAL if checked
+	prod := healthy("myapp_prod")
+
+	got := evaluate([]string{"myapp_prod"}, []Report{staging, prod}, th, now)
+	want := "1 instance(s) OK\n" +
+		"myapp_prod OK: 2 worker(s), 2/2 booted, threads 1/10 busy, backlog 0, rss max 300MB\n" +
+		"ignored: myapp_staging"
+	if got.State != sensu.CheckStateOK || got.Message != want {
+		t.Errorf("evaluate() = %d %q\nwant 0 %q", got.State, got.Message, want)
+	}
+
+	// Without --expect, every running instance is checked.
+	if got := evaluate(nil, []Report{staging, prod}, th, now); got.State != sensu.CheckStateCritical {
+		t.Errorf("evaluate() without expect = %d %q, want CRITICAL", got.State, got.Message)
+	}
+
+	got = evaluate(nil, nil, th, now)
+	if got.Message != "no puma instance found" {
+		t.Errorf("evaluate() = %q", got.Message)
 	}
 }
 

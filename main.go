@@ -1,11 +1,9 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,14 +12,11 @@ import (
 	"github.com/sensu/sensu-plugin-sdk/sensu"
 )
 
-// defaultStateFile is looked up in the master working directory when --state-pattern is not set.
-const defaultStateFile = "tmp/pids/puma.state"
-
 // Config represents the check plugin config.
 type Config struct {
 	sensu.PluginConfig
 	Expect       []string
-	StatePattern string
+	StateGlobs   []string
 	MinWorkers   int
 	BusyWarn     int
 	BusyCrit     int
@@ -52,17 +47,17 @@ var (
 			Argument:  "expect",
 			Shorthand: "e",
 			Default:   []string{},
-			Usage:     "Puma tag that must be running, {app}_{env} (repeatable or comma separated)",
+			Usage:     "Puma tag to check, {app}_{env} (repeatable or comma separated): must be running, the other instances are ignored. Default: every running instance",
 			Value:     &plugin.Expect,
 		},
-		&sensu.PluginConfigOption[string]{
-			Path:      "state-pattern",
-			Env:       "CHECK_PUMA_STATE_PATTERN",
-			Argument:  "state-pattern",
+		&sensu.SlicePluginConfigOption[string]{
+			Path:      "state-glob",
+			Env:       "CHECK_PUMA_STATE_GLOB",
+			Argument:  "state-glob",
 			Shorthand: "s",
-			Default:   "",
-			Usage:     "Path of the Puma state file, {tag} {app} {env} are replaced (default: <master cwd>/" + defaultStateFile + ")",
-			Value:     &plugin.StatePattern,
+			Default:   []string{},
+			Usage:     "Glob of Puma state files, matched to the instances by master PID (repeatable). Fallback: <master cwd>/" + defaultStateFile + ", as root",
+			Value:     &plugin.StateGlobs,
 		},
 		&sensu.PluginConfigOption[int]{
 			Path: "min-workers", Env: "CHECK_PUMA_MIN_WORKERS", Argument: "min-workers", Default: 2,
@@ -136,6 +131,11 @@ func checkArgs(event *corev2.Event) (int, error) {
 	if plugin.Timeout <= 0 {
 		return sensu.CheckStateUnknown, fmt.Errorf("--timeout must be greater than 0")
 	}
+	for _, g := range plugin.StateGlobs {
+		if _, err := filepath.Match(g, ""); err != nil {
+			return sensu.CheckStateUnknown, fmt.Errorf("invalid --state-glob %q: %w", g, err)
+		}
+	}
 	return sensu.CheckStateOK, nil
 }
 
@@ -145,62 +145,26 @@ func executeCheck(event *corev2.Event) (int, error) {
 		return sensu.CheckStateUnknown, fmt.Errorf("scanning %s: %w", plugin.ProcRoot, err)
 	}
 
+	states, issues := indexStates(plugin.StateGlobs)
+	c := collector{
+		procRoot: plugin.ProcRoot,
+		states:   states,
+		globs:    len(plugin.StateGlobs) > 0,
+		timeout:  time.Duration(plugin.Timeout) * time.Second,
+	}
+	expected := expectedTags(plugin.Expect)
 	reports := make([]Report, 0, len(instances))
 	for _, inst := range instances {
-		reports = append(reports, collect(inst))
+		if len(expected) > 0 && !slices.Contains(expected, inst.Tag) {
+			reports = append(reports, Report{Instance: inst}) // ignored: no control app query
+			continue
+		}
+		reports = append(reports, c.collect(inst))
 	}
 
-	result := evaluate(expectedTags(plugin.Expect), reports, thresholds(), time.Now())
+	result := evaluate(expected, reports, thresholds(), time.Now(), issues...)
 	fmt.Printf("%s %s: %s\n", plugin.Name, stateLabel(result.State), result.Message)
 	return result.State, nil
-}
-
-// collect reads the state file of an instance and queries its control app.
-func collect(inst *puma.Instance) Report {
-	r := Report{Instance: inst}
-	if len(inst.Masters) == 0 {
-		return r
-	}
-
-	path, note := statePath(inst)
-	if path == "" {
-		r.Note = note
-		return r
-	}
-	st, err := puma.ReadState(path)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		// The app may simply not use a state file: process checks only.
-		r.Note = "no " + defaultStateFile
-		if plugin.StatePattern != "" {
-			r.Note = "no " + path
-		}
-		return r
-	case errors.Is(err, puma.ErrNoControlApp):
-		r.Note = "no control app"
-		return r
-	case err != nil:
-		r.StatsErr = err
-		return r
-	}
-	r.StatePID = st.PID
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(plugin.Timeout)*time.Second)
-	defer cancel()
-	r.Stats, r.StatsErr = puma.FetchStats(ctx, st)
-	return r
-}
-
-// statePath returns the state file of an instance, or an empty path and the reason.
-func statePath(inst *puma.Instance) (string, string) {
-	if plugin.StatePattern != "" {
-		return strings.NewReplacer("{tag}", inst.Tag, "{app}", inst.App, "{env}", inst.Env).Replace(plugin.StatePattern), ""
-	}
-	cwd, err := puma.Cwd(plugin.ProcRoot, inst.Masters[0].PID)
-	if err != nil {
-		return "", "master cwd unreadable, set --state-pattern"
-	}
-	return filepath.Join(cwd, defaultStateFile), ""
 }
 
 // expectedTags flattens the --expect values; empty items come from an unset Sensu token.

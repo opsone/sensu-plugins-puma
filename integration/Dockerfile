@@ -4,8 +4,11 @@ RUN apt-get update \
  && gem install --no-document puma rack \
  && apt-get purge -y --auto-remove build-essential \
  && rm -rf /var/lib/apt/lists/*
-COPY app /srv/myapp_prod
-COPY app /srv/myapp_staging
-RUN mkdir -p /srv/myapp_prod/tmp/pids /srv/myapp_staging/tmp/pids
+# Deployment directories do not match the Puma tags (myapp_prod, myapp_staging).
+COPY app /srv/myapp-production
+COPY app /srv/myapp-staging
+# Stale state file of a removed app: its PID is no running master, it must be ignored.
+RUN mkdir -p /srv/myapp-production/tmp/pids /srv/myapp-staging/tmp/pids /srv/oldapp/tmp/pids \
+ && printf -- '---\npid: 4242\ncontrol_url: tcp://127.0.0.1:9299\ncontrol_auth_token: x\n' > /srv/oldapp/tmp/pids/puma.state
 COPY check-puma /usr/local/bin/check-puma
 CMD ["sleep", "infinity"]

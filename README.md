@@ -29,7 +29,8 @@ From the control app, when the state file is found:
 
 | Situation | State |
 |---|---|
-| Control app unreachable, state file unreadable | WARNING |
+| Control app unreachable | WARNING |
+| State file matching `--state-glob` unreadable | WARNING |
 | No worker booted / some workers not booted | CRITICAL / WARNING |
 | Worker without checkin for `--checkin-max` seconds (hung) | CRITICAL |
 | Phased restart lasting more than `--phase-max` minutes | WARNING |
@@ -38,14 +39,17 @@ From the control app, when the state file is found:
 | Queued requests (all workers) above `--backlog-warn` / `--backlog-crit` | WARNING / CRITICAL |
 | Instance not in cluster mode | WARNING |
 
-An instance without state file or without control app is checked from its processes only, and stays OK. A running instance missing from `--expect` is checked and flagged `(not expected)`, without alert.
+An instance without state file or without control app is checked from its processes only, and stays OK.
+
+`--expect` lists the instances to check: the other running instances (e.g. a staging not worth an alert) are ignored, only named on an `ignored:` line. Without `--expect`, every running instance is checked, but a stopped one goes unnoticed.
 
 The output gives one line per instance, the state is the worst one:
 
 ```
 check-puma CRITICAL: 1/2 instance(s) in trouble
+myapp_api_prod OK: 2 worker(s), 2/2 booted, threads 1/4 busy, backlog 0, rss max 312MB
 myapp_prod CRITICAL: threads 4/4 busy (100%)
-myapp_staging OK: 2 worker(s), 2/2 booted, threads 1/4 busy, backlog 0, rss max 312MB
+ignored: myapp_staging
 ```
 
 Workers report their thread pool to the master at checkin, every 5 seconds: busy threads and backlog are a 5-second-old snapshot.
@@ -73,17 +77,23 @@ Puma is started in cluster mode with `--tag {app}_{env}`. The env is what follow
 
 ## State file location
 
-By default, `tmp/pids/puma.state` in the working directory of the master. Reading the working directory of another user's process requires root: for an unprivileged Sensu agent, give the path with `--state-pattern`, where `{tag}`, `{app}` and `{env}` are replaced:
+The state files are given as globs with `--state-glob` (repeatable), and matched to the instances by **master PID** (the `pid` of the state file): the deployment directory does not need to match the Puma tag.
 
 ```sh
-check-puma --state-pattern '/var/www/{tag}/shared/tmp/pids/puma.state'
-check-puma --state-pattern '/home/{app}/{env}/shared/tmp/pids/puma.state'
+check-puma --state-glob '/home/deploy/*/shared/tmp/pids/puma.state' \
+           --state-glob '/var/www/*/shared/tmp/pids/puma.state'
 ```
 
-With a TCP control app, the Sensu agent user only needs to read the state file (it holds the control token) and to traverse its parent directories. Puma writes it with the process umask, usually world readable. To check:
+- A stale state file (instance stopped, app removed) holds a PID no master has: it is ignored.
+- A matching state file that cannot be read (permissions, no `pid`) is a WARNING when a checked instance has no state file: it may be its one.
+- Globs are standard shell patterns, `**` is not supported.
+
+Without match, the check looks for `tmp/pids/puma.state` in the working directory of the master. Reading the working directory of another user's process requires root: for an unprivileged Sensu agent, use `--state-glob`.
+
+With a TCP control app, the Sensu agent user only needs to read the state files (they hold the control token) and to traverse their parent directories. Puma writes them with the process umask, usually world readable. To check:
 
 ```sh
-sudo -u sensu check-puma --state-pattern '/var/www/{tag}/shared/tmp/pids/puma.state' --expect myapp_prod
+sudo -u sensu check-puma --state-glob '/home/deploy/*/shared/tmp/pids/puma.state' --expect myapp_prod
 ```
 
 ## Usage
@@ -91,8 +101,8 @@ sudo -u sensu check-puma --state-pattern '/var/www/{tag}/shared/tmp/pids/puma.st
 ```
 check-puma [flags]
 
-  -e, --expect strings         Puma tag that must be running (repeatable or comma separated)
-  -s, --state-pattern string   Path of the Puma state file, {tag} {app} {env} replaced
+  -e, --expect strings         Puma tags to check, must be running, others ignored (repeatable or comma separated)
+  -s, --state-glob strings     Glob of Puma state files, matched by master PID (repeatable)
       --min-workers int        Minimum worker processes per master (default 2)
       --busy-warn int          Busy threads % for WARNING (default 80)
       --busy-crit int          Busy threads % for CRITICAL (default 95)
@@ -107,7 +117,7 @@ check-puma [flags]
       --proc-root string       procfs mount point (default "/proc")
 ```
 
-A threshold set to 0 disables its test. Every option can also be set with an environment variable (`CHECK_PUMA_EXPECT`, `CHECK_PUMA_STATE_PATTERN`, `CHECK_PUMA_BUSY_WARN`…).
+A threshold set to 0 disables its test. Every option can also be set with an environment variable (`CHECK_PUMA_EXPECT`, `CHECK_PUMA_STATE_GLOB`, `CHECK_PUMA_BUSY_WARN`…).
 
 ## Check definition
 
@@ -120,6 +130,7 @@ metadata:
 spec:
   command: >-
     check-puma
+    --state-glob '/home/deploy/*/shared/tmp/pids/puma.state'
     --expect '{{ .labels.puma_instances | default "" }}'
     {{ .annotations.check_puma_args | default "" }}
   runtime_assets:
@@ -131,16 +142,18 @@ spec:
     - puma
 ```
 
+The state globs follow the deployment conventions of the fleet: set once in the check, not per host. Add a `--state-glob` per other convention.
+
 Per-host settings, in the agent configuration:
 
 ```yaml
 labels:
-  puma_instances: "myapp_prod,myapp_staging"
+  puma_instances: "myapp_prod"   # instances to check: myapp_staging, also running, is ignored
 annotations:
-  check_puma_args: "--state-pattern '/var/www/{tag}/shared/tmp/pids/puma.state' --rss-crit 1500"
+  check_puma_args: "--rss-crit 1500"
 ```
 
-Without `puma_instances`, the running instances are checked but a stopped one goes unnoticed.
+`puma_instances` is a label, to select the entities running an app (`sensuctl entity list --label-selector 'puma_instances matches myapp_prod'`, filters, dashboard). `check_puma_args` is an annotation: free-form arguments, not meant for selection.
 
 ## Build and release
 

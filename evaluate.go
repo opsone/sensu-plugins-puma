@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -31,6 +32,7 @@ type Report struct {
 	Stats    *puma.Stats // nil when the control app was not queried or failed
 	StatsErr error       // control app expected but unusable
 	Note     string      // why stats are missing, informational
+	NoState  bool        // no state file found for the instance
 }
 
 // Result is the outcome of the evaluation.
@@ -49,40 +51,49 @@ type instanceResult struct {
 	line  string
 }
 
-// evaluate turns the discovered instances into a check result: one summary line, then one line per instance.
-func evaluate(expected []string, reports []Report, th Thresholds, now time.Time) Result {
+// evaluate turns the discovered instances into a check result: one summary line, then one line per
+// instance. With expected tags, only those instances are checked, the others are listed as ignored.
+// Issues (unreadable state files) are warnings, reported only when a checked instance has no state
+// file: they may hide its stats.
+func evaluate(expected []string, reports []Report, th Thresholds, now time.Time, issues ...string) Result {
 	byTag := map[string]Report{}
+	var ignored []string
 	for _, r := range reports {
+		if len(expected) > 0 && !slices.Contains(expected, r.Instance.Tag) {
+			ignored = append(ignored, r.Instance.Tag)
+			continue
+		}
 		byTag[r.Instance.Tag] = r
 	}
-	tags := make([]string, 0, len(byTag)+len(expected))
-	for tag := range byTag {
-		tags = append(tags, tag)
-	}
-	for _, tag := range expected {
-		if _, ok := byTag[tag]; !ok {
-			tags = append(tags, tag)
-		}
-	}
+	tags := slices.Concat(slices.Collect(maps.Keys(byTag)), expected)
 	slices.Sort(tags)
 	tags = slices.Compact(tags)
+	slices.Sort(ignored)
 
-	if len(tags) == 0 {
-		return Result{sensu.CheckStateOK, "no puma instance found"}
+	stateMissing := false
+	for _, r := range byTag {
+		stateMissing = stateMissing || r.NoState
+	}
+	if !stateMissing {
+		issues = nil
+	}
+
+	if len(tags) == 0 && len(issues) == 0 {
+		msg := "no puma instance found"
+		if len(ignored) > 0 {
+			msg = "no puma instance checked, ignored: " + strings.Join(ignored, ", ")
+		}
+		return Result{sensu.CheckStateOK, msg}
 	}
 
 	worst, inTrouble := sensu.CheckStateOK, 0
-	lines := make([]string, 0, len(tags))
+	lines := make([]string, 0, len(tags)+len(issues)+1)
 	for _, tag := range tags {
 		var res instanceResult
-		r, found := byTag[tag]
-		if !found {
-			res = instanceResult{sensu.CheckStateCritical, fmt.Sprintf("%s CRITICAL: not running", tag)}
-		} else {
+		if r, found := byTag[tag]; found {
 			res = evaluateInstance(r, th, now)
-			if len(expected) > 0 && !slices.Contains(expected, tag) {
-				res.line += " (not expected)"
-			}
+		} else {
+			res = instanceResult{sensu.CheckStateCritical, fmt.Sprintf("%s CRITICAL: not running", tag)}
 		}
 		worst = max(worst, res.state)
 		if res.state != sensu.CheckStateOK {
@@ -94,6 +105,16 @@ func evaluate(expected []string, reports []Report, th Thresholds, now time.Time)
 	summary := fmt.Sprintf("%d instance(s) OK", len(tags))
 	if inTrouble > 0 {
 		summary = fmt.Sprintf("%d/%d instance(s) in trouble", inTrouble, len(tags))
+	}
+	if len(issues) > 0 {
+		worst = max(worst, sensu.CheckStateWarning)
+		summary += fmt.Sprintf(", %d state file issue(s)", len(issues))
+		for _, issue := range issues {
+			lines = append(lines, "state file WARNING: "+issue)
+		}
+	}
+	if len(ignored) > 0 {
+		lines = append(lines, "ignored: "+strings.Join(ignored, ", "))
 	}
 	return Result{worst, summary + "\n" + strings.Join(lines, "\n")}
 }
