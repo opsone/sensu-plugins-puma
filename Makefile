@@ -1,4 +1,4 @@
-BINARY  := check-puma
+BINARY  := check-puma-status
 PROJECT := sensu-plugins-puma
 VERSION ?= $(patsubst v%,%,$(shell git describe --tags --always 2>/dev/null || echo dev))
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -27,7 +27,7 @@ linux:
 integration: linux
 	./integration/run.sh
 
-# Sensu assets: one tar.gz per arch with bin/check-puma, plus a sha512 checksums file.
+# Sensu assets: one tar.gz per arch with bin/check-puma-status, plus a sha512 checksums file.
 dist: test
 	rm -rf dist
 	set -e; for arch in $(ARCHS); do \

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs check-puma against real Puma cluster instances inside a Docker container.
+# Runs check-puma-status against real Puma cluster instances inside a Docker container.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -38,28 +38,39 @@ wait_workers myapp_staging
 sleep 2 # first checkin of the workers
 
 failures=0
-expect() { # <exit code> [user:]<args>...
-  local want=$1 user=root; shift
-  if [[ $1 == --as=* ]]; then user=${1#--as=}; shift; fi
+# Runs the check as an unprivileged user, like sensu-agent does.
+expect() { # <exit code> [VAR=value...] <args>...
+  local want=$1 env=(); shift
+  while [[ ${1:-} == CHECK_*=* ]]; do env+=("$1"); shift; done
   local out rc=0
-  out=$(dx runuser -u "$user" -- check-puma "$@") || rc=$?
+  out=$(dx runuser -u nobody -- env ${env[@]+"${env[@]}"} check-puma-status "$@") || rc=$?
   if [[ $rc -eq $want ]]; then
-    echo "ok   [$rc] check-puma $*"
+    echo "ok   [$rc] ${env[*]+${env[*]}} check-puma-status $*"
   else
-    echo "FAIL [$rc, want $want] check-puma $*"
+    echo "FAIL [$rc, want $want] ${env[*]+${env[*]}} check-puma-status $*"
     failures=$((failures + 1))
   fi
   sed 's/^/       /' <<<"$out"
 }
 
-expect 0 --expect myapp_prod,myapp_staging
-expect 2 --expect myapp_prod,myapp_staging,other_prod
+# State files matched by master PID: deployment directories unrelated to the tags,
+# stale file of /srv/oldapp ignored. Stats through the TCP control app.
+glob='/srv/*/tmp/pids/puma.state'
 
-# Unprivileged agent: master cwd unreadable, stats skipped, process checks only.
-expect 0 --as=nobody --expect myapp_prod,myapp_staging
-# Unprivileged agent with a state glob: state files matched by master PID (deployment
-# directories unrelated to the tags, stale file ignored), stats through the TCP control app.
-expect 0 --as=nobody --expect myapp_prod,myapp_staging --state-glob '/srv/*/tmp/pids/puma.state'
+expect 0 -s "$glob" --expect myapp_prod,myapp_staging
+expect 2 -s "$glob" --expect myapp_prod,myapp_staging,other_prod
+
+# Invalid configuration.
+expect 3 --expect myapp_prod
+expect 3 -s "$glob" --expect 'myapp_[prod'
+
+# Glob matching nothing: process checks only, still OK.
+expect 0 -s '/nowhere/*/puma.state' --expect myapp_prod
+
+# Configuration through environment variables, as in the README CheckConfig (comma separated
+# lists, expect pattern).
+expect 0 CHECK_PUMA_STATE_GLOB="/home/deploy/*/shared/tmp/pids/puma.state,$glob" CHECK_PUMA_EXPECT='*_prod'
+expect 2 CHECK_PUMA_STATE_GLOB="$glob" CHECK_PUMA_EXPECT='*_prod,other_prod'
 
 # data_only: the control app refuses the commands changing the server state.
 token=$(dx sed -n 's/^control_auth_token: *//p' /srv/myapp-production/tmp/pids/puma.state)
@@ -74,32 +85,32 @@ fi
 # their thread pool at checkin (every 5s): check after the next one.
 for _ in $(seq 4); do docker exec -d "$container" curl -s localhost:3000/sleep; done
 sleep 6
-expect 2 --expect myapp_prod
+expect 2 -s "$glob" --expect myapp_prod
 sleep 3
 
 # Hung worker: no checkin while stopped (Puma workers check in every 5s).
 worker=$(dx pgrep -f "cluster worker 0: .* \[myapp_prod\]")
 dx kill -STOP "$worker"
 sleep 12
-expect 2 --expect myapp_prod --checkin-max 8
+expect 2 -s "$glob" --expect myapp_prod --checkin-max 8
 dx kill -CONT "$worker"
 sleep 6
 
 # Crashed worker: respawned by the master, reported as restarted.
 dx kill -KILL "$(dx pgrep -f "cluster worker 1: .* \[myapp_prod\]")"
 wait_workers myapp_prod
-expect 1 --expect myapp_prod --worker-min-age 15
+expect 1 -s "$glob" --expect myapp_prod --worker-min-age 15
 
 # Staging in trouble (crashed worker): alert without --expect, ignored when only prod is expected.
 sleep 6 # prod worker restarted above gets older than --worker-min-age
 dx kill -KILL "$(dx pgrep -f "cluster worker 1: .* \[myapp_staging\]")"
 wait_workers myapp_staging
-expect 1 --worker-min-age 5
-expect 0 --expect myapp_prod --worker-min-age 5
+expect 1 -s "$glob" --worker-min-age 5
+expect 0 -s "$glob" --expect myapp_prod --worker-min-age 5
 
 # Master killed: its workers exit, the instance is gone.
 dx pkill -KILL -f "puma .* \[myapp_staging\]$"
 sleep 3
-expect 2 --expect myapp_prod,myapp_staging
+expect 2 -s "$glob" --expect myapp_prod,myapp_staging
 
 exit $failures

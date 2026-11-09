@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Renamed `check-puma` to `check-puma-status`, after the naming rule of the Opsone plugins (the check reads the Puma status page).
+- `--state-glob` is required: the fallback on `tmp/pids/puma.state` in the master working directory (root only) is removed.
+- README: every option passed through `env_vars` filled from entity annotations, as in the other Opsone plugins, with a table of the environment variables.
+
+### Added
+- `--expect` accepts patterns (`*_prod`): the matching running instances are checked, without being required. `*` checks every running instance.
+
+### Fixed
+- `CHECK_PUMA_STATE_GLOB` holding several comma separated globs was read as a single glob.
+
 ## [0.2.0] - 2026-11-09
 
 ### Changed

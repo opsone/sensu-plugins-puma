@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opsone/sensu-plugins-puma/internal/puma"
 	"github.com/sensu/sensu-plugin-sdk/sensu"
 )
 
@@ -83,49 +82,34 @@ func TestIndexStates(t *testing.T) {
 
 func TestCollect(t *testing.T) {
 	url := controlApp(t)
-	procRoot := t.TempDir()
-
-	// Master 500 has a readable working directory holding the default state file.
-	appDir := t.TempDir()
-	writeFile(t, filepath.Join(appDir, defaultStateFile), stateFile(500, url), 0o644)
-	if err := os.MkdirAll(filepath.Join(procRoot, "500"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(appDir, filepath.Join(procRoot, "500", "cwd")); err != nil {
-		t.Fatal(err)
-	}
-
-	instance := func(masterPIDs ...int) *puma.Instance {
-		inst := &puma.Instance{Tag: "myapp_prod"}
+	instance := func(masterPIDs ...int) *Instance {
+		inst := &Instance{Tag: "myapp_prod"}
 		for _, pid := range masterPIDs {
-			inst.Masters = append(inst.Masters, puma.Process{PID: pid})
+			inst.Masters = append(inst.Masters, Process{PID: pid})
 		}
 		return inst
 	}
 	states := map[int]stateEntry{
-		100: {state: puma.State{PID: 100, ControlURL: url, ControlAuthToken: "t0ken"}},
-		200: {state: puma.State{PID: 200}, noControl: true},
+		100: {state: State{PID: 100, ControlURL: url, ControlAuthToken: "t0ken"}},
+		200: {state: State{PID: 200}, noControl: true},
 	}
 
 	tests := []struct {
 		name        string
-		inst        *puma.Instance
-		globs       bool
+		inst        *Instance
 		wantStats   bool
 		wantNote    string
 		wantNoState bool
 	}{
-		{name: "matched by master pid", inst: instance(100), globs: true, wantStats: true},
-		{name: "second master matched", inst: instance(999, 100), globs: true, wantStats: true},
-		{name: "matched, no control app", inst: instance(200), globs: true, wantNote: "no control app"},
-		{name: "no match, cwd fallback", inst: instance(500), globs: true, wantStats: true},
-		{name: "no match, cwd unreadable", inst: instance(600), globs: true, wantNote: "no state file", wantNoState: true},
-		{name: "no glob, cwd unreadable", inst: instance(600), wantNote: "master cwd unreadable, set --state-glob", wantNoState: true},
+		{name: "matched by master pid", inst: instance(100), wantStats: true},
+		{name: "second master matched", inst: instance(999, 100), wantStats: true},
+		{name: "matched, no control app", inst: instance(200), wantNote: "no control app"},
+		{name: "no state file", inst: instance(600), wantNote: "no state file", wantNoState: true},
 		{name: "orphan workers only", inst: instance()},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := collector{procRoot: procRoot, states: states, globs: tt.globs, timeout: 5 * time.Second}
+			c := collector{states: states, timeout: 5 * time.Second}
 			r := c.collect(tt.inst)
 			if r.StatsErr != nil {
 				t.Fatalf("StatsErr = %v", r.StatsErr)

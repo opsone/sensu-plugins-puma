@@ -3,11 +3,11 @@ package main
 import (
 	"fmt"
 	"maps"
+	"path"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/opsone/sensu-plugins-puma/internal/puma"
 	"github.com/sensu/sensu-plugin-sdk/sensu"
 )
 
@@ -27,12 +27,12 @@ type Thresholds struct {
 
 // Report gathers what is known about one instance before evaluation.
 type Report struct {
-	Instance *puma.Instance
-	StatePID int         // PID found in the state file, 0 if not read
-	Stats    *puma.Stats // nil when the control app was not queried or failed
-	StatsErr error       // control app expected but unusable
-	Note     string      // why stats are missing, informational
-	NoState  bool        // no state file found for the instance
+	Instance *Instance
+	StatePID int    // PID found in the state file, 0 if not read
+	Stats    *Stats // nil when the control app was not queried or failed
+	StatsErr error  // control app expected but unusable
+	Note     string // why stats are missing, informational
+	NoState  bool   // no state file found for the instance
 }
 
 // Result is the outcome of the evaluation.
@@ -52,20 +52,21 @@ type instanceResult struct {
 }
 
 // evaluate turns the discovered instances into a check result: one summary line, then one line per
-// instance. With expected tags, only those instances are checked, the others are listed as ignored.
+// instance. With expected tags (names or patterns), only the matching instances are checked, the
+// others are listed as ignored; expected names without wildcard must be running.
 // Issues (unreadable state files) are warnings, reported only when a checked instance has no state
 // file: they may hide its stats.
 func evaluate(expected []string, reports []Report, th Thresholds, now time.Time, issues ...string) Result {
 	byTag := map[string]Report{}
 	var ignored []string
 	for _, r := range reports {
-		if len(expected) > 0 && !slices.Contains(expected, r.Instance.Tag) {
+		if !selected(expected, r.Instance.Tag) {
 			ignored = append(ignored, r.Instance.Tag)
 			continue
 		}
 		byTag[r.Instance.Tag] = r
 	}
-	tags := slices.Concat(slices.Collect(maps.Keys(byTag)), expected)
+	tags := slices.Concat(slices.Collect(maps.Keys(byTag)), required(expected))
 	slices.Sort(tags)
 	tags = slices.Compact(tags)
 	slices.Sort(ignored)
@@ -119,6 +120,30 @@ func evaluate(expected []string, reports []Report, th Thresholds, now time.Time,
 	return Result{worst, summary + "\n" + strings.Join(lines, "\n")}
 }
 
+// selected reports whether an instance is checked: no --expect, or a matching name or pattern.
+func selected(expected []string, tag string) bool {
+	if len(expected) == 0 {
+		return true
+	}
+	for _, e := range expected {
+		if ok, _ := path.Match(e, tag); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// required returns the expected names without wildcard: the instances that must be running.
+func required(expected []string) []string {
+	var names []string
+	for _, e := range expected {
+		if !strings.ContainsAny(e, `*?[\`) {
+			names = append(names, e)
+		}
+	}
+	return names
+}
+
 func evaluateInstance(r Report, th Thresholds, now time.Time) instanceResult {
 	inst := r.Instance
 	var findings []finding
@@ -127,11 +152,11 @@ func evaluateInstance(r Report, th Thresholds, now time.Time) instanceResult {
 	}
 
 	// Processes.
-	masters := map[int]puma.Process{}
+	masters := map[int]Process{}
 	for _, m := range inst.Masters {
 		masters[m.PID] = m
 	}
-	var workers, orphans []puma.Worker
+	var workers, orphans []Worker
 	for _, w := range inst.Workers {
 		if _, ok := masters[w.MasterPID]; ok {
 			workers = append(workers, w)
@@ -215,7 +240,7 @@ func evaluateInstance(r Report, th Thresholds, now time.Time) instanceResult {
 }
 
 // evaluateStats checks the control app answer and returns the summary items of a healthy instance.
-func evaluateStats(s *puma.Stats, workers []puma.Worker, th Thresholds, now time.Time, add func(int, string, ...any)) []string {
+func evaluateStats(s *Stats, workers []Worker, th Thresholds, now time.Time, add func(int, string, ...any)) []string {
 	if len(s.WorkerStatus) == 0 {
 		add(sensu.CheckStateWarning, "not running in cluster mode")
 		return nil
@@ -305,7 +330,7 @@ func evaluateStats(s *puma.Stats, workers []puma.Worker, th Thresholds, now time
 	}
 }
 
-func pids(ps []puma.Process) string {
+func pids(ps []Process) string {
 	s := make([]string, len(ps))
 	for i, p := range ps {
 		s[i] = fmt.Sprint(p.PID)

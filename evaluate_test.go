@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opsone/sensu-plugins-puma/internal/puma"
 	"github.com/sensu/sensu-plugin-sdk/sensu"
 )
 
@@ -19,26 +18,26 @@ var (
 	}
 )
 
-func process(pid int, age time.Duration) puma.Process {
-	return puma.Process{PID: pid, StartedAt: now.Add(-age), RSS: 300 << 20}
+func process(pid int, age time.Duration) Process {
+	return Process{PID: pid, StartedAt: now.Add(-age), RSS: 300 << 20}
 }
 
 // healthy returns a 2-worker instance, up for one hour, with its control app stats.
 func healthy(tag string) Report {
-	app, env := puma.SplitTag(tag)
+	app, env := SplitTag(tag)
 	return Report{
-		Instance: &puma.Instance{
+		Instance: &Instance{
 			Tag: tag, App: app, Env: env,
-			Masters: []puma.Process{process(100, time.Hour)},
-			Workers: []puma.Worker{
+			Masters: []Process{process(100, time.Hour)},
+			Workers: []Worker{
 				{Process: process(101, time.Hour), Index: 0, MasterPID: 100},
 				{Process: process(102, time.Hour), Index: 1, MasterPID: 100},
 			},
 		},
 		StatePID: 100,
-		Stats: &puma.Stats{
+		Stats: &Stats{
 			Workers: 2, BootedWorkers: 2,
-			WorkerStatus: []puma.WorkerStatus{
+			WorkerStatus: []WorkerStatus{
 				workerStatus(101, 0, 1, 0),
 				workerStatus(102, 1, 0, 0),
 			},
@@ -46,10 +45,10 @@ func healthy(tag string) Report {
 	}
 }
 
-func workerStatus(pid, index, busy, backlog int) puma.WorkerStatus {
-	return puma.WorkerStatus{
+func workerStatus(pid, index, busy, backlog int) WorkerStatus {
+	return WorkerStatus{
 		StartedAt: now.Add(-time.Hour), PID: pid, Index: index, Booted: true, LastCheckin: now.Add(-5 * time.Second),
-		LastStatus: puma.ThreadStatus{Backlog: backlog, Running: 5, PoolCapacity: 5 - busy, MaxThreads: 5},
+		LastStatus: ThreadStatus{Backlog: backlog, Running: 5, PoolCapacity: 5 - busy, MaxThreads: 5},
 	}
 }
 
@@ -167,7 +166,7 @@ func TestEvaluate(t *testing.T) {
 		},
 		{
 			name:     "single mode",
-			mutate:   func(r *Report) { r.Stats = &puma.Stats{} },
+			mutate:   func(r *Report) { r.Stats = &Stats{} },
 			state:    sensu.CheckStateWarning,
 			contains: "not running in cluster mode",
 		},
@@ -294,13 +293,25 @@ func TestEvaluateIgnored(t *testing.T) {
 	}
 }
 
-func TestExpectedTags(t *testing.T) {
-	got := expectedTags([]string{"myapp_prod, myapp_staging", "", "other_prod"})
-	want := []string{"myapp_prod", "myapp_staging", "other_prod"}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Errorf("expectedTags() = %v, want %v", got, want)
+func TestEvaluateExpectPatterns(t *testing.T) {
+	staging, prod, api := healthy("myapp_staging"), healthy("myapp_prod"), healthy("api_prod")
+	staging.Instance.Workers = nil // would be CRITICAL if checked
+	reports := []Report{staging, prod, api}
+
+	tests := []struct {
+		expected []string
+		state    int
+		want     string
+	}{
+		{[]string{"*"}, sensu.CheckStateCritical, "1/3 instance(s) in trouble"},
+		{[]string{"*_prod"}, sensu.CheckStateOK, "2 instance(s) OK\napi_prod OK"},
+		{[]string{"*_prod", "other_prod"}, sensu.CheckStateCritical, "other_prod CRITICAL: not running\nignored: myapp_staging"},
+		{[]string{"*_preprod"}, sensu.CheckStateOK, "no puma instance checked, ignored: api_prod, myapp_prod, myapp_staging"},
 	}
-	if got := expectedTags([]string{""}); got != nil {
-		t.Errorf("expectedTags(empty token) = %v, want nil", got)
+	for _, tt := range tests {
+		got := evaluate(tt.expected, reports, th, now)
+		if got.State != tt.state || !strings.Contains(got.Message, tt.want) {
+			t.Errorf("evaluate(%v) = %d %q\nwant %d containing %q", tt.expected, got.State, got.Message, tt.state, tt.want)
+		}
 	}
 }

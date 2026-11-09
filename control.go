@@ -1,4 +1,4 @@
-package puma
+package main
 
 import (
 	"bufio"

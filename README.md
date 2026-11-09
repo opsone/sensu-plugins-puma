@@ -1,4 +1,4 @@
-# check-puma
+# check-puma-status
 
 Sensu Go check for the Puma (Ruby on Rails) cluster instances running on a host, several instances per host supported (e.g. `myapp_prod` and `myapp_staging`).
 
@@ -41,12 +41,16 @@ From the control app, when the state file is found:
 
 An instance without state file or without control app is checked from its processes only, and stays OK.
 
-`--expect` lists the instances to check: the other running instances (e.g. a staging not worth an alert) are ignored, only named on an `ignored:` line. Without `--expect`, every running instance is checked, but a stopped one goes unnoticed.
+`--expect` lists the instances to check: the other running instances (e.g. a staging not worth an alert) are ignored, only named on an `ignored:` line.
+
+- A name (`myapp_prod`) must be running: CRITICAL if not.
+- A pattern (`*_prod`, `myapp_*`) checks the running instances it matches, without requiring any: a stopped instance goes unnoticed.
+- Without `--expect` (or `*`), every running instance is checked.
 
 The output gives one line per instance, the state is the worst one:
 
 ```
-check-puma CRITICAL: 1/2 instance(s) in trouble
+check-puma-status CRITICAL: 1/2 instance(s) in trouble
 myapp_api_prod OK: 2 worker(s), 2/2 booted, threads 1/4 busy, backlog 0, rss max 312MB
 myapp_prod CRITICAL: threads 4/4 busy (100%)
 ignored: myapp_staging
@@ -59,7 +63,7 @@ Workers report their thread pool to the master at checkin, every 5 seconds: busy
 `config/puma.rb`:
 
 ```ruby
-# Monitoring (check-puma): state file and read-only control app
+# Monitoring (check-puma-status): state file and read-only control app
 if ENV['PUMA_CONTROL_PORT']
   state_path 'tmp/pids/puma.state'
   activate_control_app "tcp://127.0.0.1:#{ENV['PUMA_CONTROL_PORT']}", data_only: true
@@ -77,62 +81,100 @@ Puma is started in cluster mode with `--tag {app}_{env}`. The env is what follow
 
 ## State file location
 
-The state files are given as globs with `--state-glob` (repeatable), and matched to the instances by **master PID** (the `pid` of the state file): the deployment directory does not need to match the Puma tag.
+The state files are given as globs with `--state-glob` (required, repeatable), and matched to the instances by **master PID** (the `pid` of the state file): the deployment directory does not need to match the Puma tag.
 
 ```sh
-check-puma --state-glob '/home/deploy/*/shared/tmp/pids/puma.state' \
-           --state-glob '/var/www/*/shared/tmp/pids/puma.state'
+check-puma-status --state-glob '/home/deploy/*/shared/tmp/pids/puma.state' \
+                  --state-glob '/var/www/*/shared/tmp/pids/puma.state'
 ```
 
 - A stale state file (instance stopped, app removed) holds a PID no master has: it is ignored.
 - A matching state file that cannot be read (permissions, no `pid`) is a WARNING when a checked instance has no state file: it may be its one.
 - Globs are standard shell patterns, `**` is not supported.
-
-Without match, the check looks for `tmp/pids/puma.state` in the working directory of the master. Reading the working directory of another user's process requires root: for an unprivileged Sensu agent, use `--state-glob`.
+- An instance without matching state file is checked from its processes only.
 
 With a TCP control app, the Sensu agent user only needs to read the state files (they hold the control token) and to traverse their parent directories. Puma writes them with the process umask, usually world readable. To check:
 
 ```sh
-sudo -u sensu check-puma --state-glob '/home/deploy/*/shared/tmp/pids/puma.state' --expect myapp_prod
+sudo -u sensu check-puma-status --state-glob '/home/deploy/*/shared/tmp/pids/puma.state' --expect myapp_prod
 ```
 
 ## Usage
 
 ```
-check-puma [flags]
-
-  -e, --expect strings         Puma tags to check, must be running, others ignored (repeatable or comma separated)
-  -s, --state-glob strings     Glob of Puma state files, matched by master PID (repeatable)
-      --min-workers int        Minimum worker processes per master (default 2)
-      --busy-warn int          Busy threads % for WARNING (default 80)
-      --busy-crit int          Busy threads % for CRITICAL (default 95)
-      --backlog-warn int       Queued requests for WARNING (default 5)
-      --backlog-crit int       Queued requests for CRITICAL (default 20)
-      --checkin-max int        Seconds without worker checkin before CRITICAL (default 60)
-      --phase-max int          Minutes a phased restart may last before WARNING (default 15)
-      --worker-min-age int     Seconds under which a worker is reported as restarted (default 60)
-      --rss-warn int           Worker RSS in MB for WARNING (default 0, disabled)
-      --rss-crit int           Worker RSS in MB for CRITICAL (default 0, disabled)
-      --timeout int            Control app query timeout in seconds, per instance (default 5)
-      --proc-root string       procfs mount point (default "/proc")
+check-puma-status --state-glob <glob> [flags]
 ```
 
-A threshold set to 0 disables its test. Every option can also be set with an environment variable (`CHECK_PUMA_EXPECT`, `CHECK_PUMA_STATE_GLOB`, `CHECK_PUMA_BUSY_WARN`…).
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `-s`, `--state-glob` | `CHECK_PUMA_STATE_GLOB` | required | Glob of Puma state files, matched to the instances by master PID |
+| `-e`, `--expect` | `CHECK_PUMA_EXPECT` | every instance | Puma tags (must run) or patterns (`*_prod`) to check, the others are ignored |
+| `--min-workers` | `CHECK_PUMA_MIN_WORKERS` | `2` | Minimum worker processes per master (WARNING below, CRITICAL at 0) |
+| `--busy-warn` | `CHECK_PUMA_BUSY_WARN` | `80` | Busy threads %, all workers, for WARNING |
+| `--busy-crit` | `CHECK_PUMA_BUSY_CRIT` | `95` | Busy threads %, all workers, for CRITICAL |
+| `--backlog-warn` | `CHECK_PUMA_BACKLOG_WARN` | `5` | Queued requests, all workers, for WARNING |
+| `--backlog-crit` | `CHECK_PUMA_BACKLOG_CRIT` | `20` | Queued requests, all workers, for CRITICAL |
+| `--checkin-max` | `CHECK_PUMA_CHECKIN_MAX` | `60` | Seconds without worker checkin before CRITICAL |
+| `--phase-max` | `CHECK_PUMA_PHASE_MAX` | `15` | Minutes a phased restart may last before WARNING |
+| `--worker-min-age` | `CHECK_PUMA_WORKER_MIN_AGE` | `60` | Seconds under which a worker under an older master is reported as restarted |
+| `--rss-warn` | `CHECK_PUMA_RSS_WARN` | `0` | Worker RSS in MB for WARNING |
+| `--rss-crit` | `CHECK_PUMA_RSS_CRIT` | `0` | Worker RSS in MB for CRITICAL |
+| `--timeout` | `CHECK_PUMA_TIMEOUT` | `5` | Control app query timeout in seconds, per instance |
+| `--proc-root` | `CHECK_PUMA_PROC_ROOT` | `/proc` | procfs mount point |
+
+A threshold set to 0 disables its test. Lists (`--state-glob`, `--expect`) are repeatable or comma separated, also in their environment variable. A missing `--state-glob` or an invalid pattern is UNKNOWN.
 
 ## Check definition
+
+Every option is passed through `env_vars`, filled per host from entity annotations with token substitution (applied by the agent to the whole check definition, `env_vars` included). One annotation maps to one option.
+
+Naming rule: an annotation is named after its environment variable, lowercased, without the `CHECK_` prefix (`CHECK_PUMA_RSS_CRIT` → `puma_rss_crit`).
+
+Every annotation is optional: each token has an explicit, non-empty `default` in the check definition, matching the plugin defaults, so a host without annotations runs the check with the values below. Never use `| default ""`: Sensu rejects an empty environment variable, and the agent then silently drops the check. `puma_expect` therefore defaults to `*`, every running instance.
+
+Lists (`puma_expect`, `puma_state_glob`) are comma separated.
+
+Annotations, e.g. in the agent configuration (`/etc/sensu/agent.yml`):
+
+```yaml
+annotations:
+  puma_expect: "myapp_prod,myapp_api_prod"   # names must run, patterns allowed (*_prod), default * (all)
+  puma_state_glob: "/home/deploy/*/shared/tmp/pids/puma.state,/var/www/*/shared/tmp/pids/puma.state"
+  puma_min_workers: "2"                      # default 2
+  puma_busy_warn: "80"                       # %, default 80
+  puma_busy_crit: "95"                       # %, default 95
+  puma_backlog_warn: "5"                     # default 5
+  puma_backlog_crit: "20"                    # default 20
+  puma_checkin_max: "60"                     # seconds, default 60
+  puma_phase_max: "15"                       # minutes, default 15
+  puma_worker_min_age: "60"                  # seconds, default 60
+  puma_rss_warn: "1200"                      # MB per worker, default 0 (disabled)
+  puma_rss_crit: "1500"                      # MB per worker, default 0 (disabled)
+  puma_timeout: "5"                          # seconds, default 5
+```
 
 ```yaml
 ---
 type: CheckConfig
 api_version: core/v2
 metadata:
-  name: check-puma
+  name: check-puma-status
 spec:
-  command: >-
-    check-puma
-    --state-glob '/home/deploy/*/shared/tmp/pids/puma.state'
-    --expect '{{ .labels.puma_instances | default "" }}'
-    {{ .annotations.check_puma_args | default "" }}
+  command: check-puma-status
+  env_vars:
+    - CHECK_PUMA_EXPECT={{ .annotations.puma_expect | default "*" }}
+    - CHECK_PUMA_STATE_GLOB={{ .annotations.puma_state_glob | default "/home/deploy/*/shared/tmp/pids/puma.state" }}
+    - CHECK_PUMA_MIN_WORKERS={{ .annotations.puma_min_workers | default "2" }}
+    - CHECK_PUMA_BUSY_WARN={{ .annotations.puma_busy_warn | default "80" }}
+    - CHECK_PUMA_BUSY_CRIT={{ .annotations.puma_busy_crit | default "95" }}
+    - CHECK_PUMA_BACKLOG_WARN={{ .annotations.puma_backlog_warn | default "5" }}
+    - CHECK_PUMA_BACKLOG_CRIT={{ .annotations.puma_backlog_crit | default "20" }}
+    - CHECK_PUMA_CHECKIN_MAX={{ .annotations.puma_checkin_max | default "60" }}
+    - CHECK_PUMA_PHASE_MAX={{ .annotations.puma_phase_max | default "15" }}
+    - CHECK_PUMA_WORKER_MIN_AGE={{ .annotations.puma_worker_min_age | default "60" }}
+    - CHECK_PUMA_RSS_WARN={{ .annotations.puma_rss_warn | default "0" }}
+    - CHECK_PUMA_RSS_CRIT={{ .annotations.puma_rss_crit | default "0" }}
+    - CHECK_PUMA_TIMEOUT={{ .annotations.puma_timeout | default "5" }}
   runtime_assets:
     - opsone/sensu-plugins-puma
   interval: 60
@@ -141,19 +183,6 @@ spec:
   subscriptions:
     - puma
 ```
-
-The state globs follow the deployment conventions of the fleet: set once in the check, not per host. Add a `--state-glob` per other convention.
-
-Per-host settings, in the agent configuration:
-
-```yaml
-labels:
-  puma_instances: "myapp_prod"   # instances to check: myapp_staging, also running, is ignored
-annotations:
-  check_puma_args: "--rss-crit 1500"
-```
-
-`puma_instances` is a label, to select the entities running an app (`sensuctl entity list --label-selector 'puma_instances matches myapp_prod'`, filters, dashboard). `check_puma_args` is an annotation: free-form arguments, not meant for selection.
 
 ## Build and release
 
@@ -170,6 +199,6 @@ make release       # version taken from the tag, or forced: make release VERSION
 sensuctl create -f dist/opsone-sensu-plugins-puma_0.1.0.yml
 ```
 
-`make release` runs `make dist`, which runs the tests then produces in `dist/` the `linux/amd64` archive in Sensu asset layout (`bin/check-puma`), the sha512 checksums file and the asset definition, then creates the GitHub release of the tag with `gh`.
+`make release` runs `make dist`, which runs the tests then produces in `dist/` the `linux/amd64` archive in Sensu asset layout (`bin/check-puma-status`), the sha512 checksums file and the asset definition, then creates the GitHub release of the tag with `gh`.
 
-`check-puma version` prints the version, commit and build date.
+`check-puma-status version` prints the version, commit and build date.

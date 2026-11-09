@@ -1,5 +1,5 @@
-// Package puma discovers the Puma instances running on the host and queries their control app.
-package puma
+// Discovery of the Puma instances running on the host, from their process title.
+package main
 
 import (
 	"bufio"
@@ -114,11 +114,6 @@ func Discover(procRoot string) ([]*Instance, error) {
 	}
 	sort.Slice(instances, func(i, j int) bool { return instances[i].Tag < instances[j].Tag })
 	return instances, nil
-}
-
-// Cwd returns the working directory of a process (needs the same user or root).
-func Cwd(procRoot string, pid int) (string, error) {
-	return os.Readlink(filepath.Join(procRoot, strconv.Itoa(pid), "cwd"))
 }
 
 // readTitle returns the process title as set by Puma (argv rewritten, NUL separated and padded).
