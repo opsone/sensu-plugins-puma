@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- The instances left out by `--expect` are no longer named in the output (`ignored:` line removed).
+
 ## [0.3.0] - 2026-11-09
 
 ### Changed

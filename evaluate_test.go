@@ -91,7 +91,7 @@ func TestEvaluate(t *testing.T) {
 			name:     "instance not expected is ignored",
 			expected: []string{"other_prod"},
 			state:    sensu.CheckStateCritical,
-			contains: "1/1 instance(s) in trouble\nother_prod CRITICAL: not running\nignored: myapp_prod",
+			contains: "1/1 instance(s) in trouble\nother_prod CRITICAL: not running",
 		},
 		{
 			name: "master gone, orphan workers",
@@ -276,8 +276,7 @@ func TestEvaluateIgnored(t *testing.T) {
 
 	got := evaluate([]string{"myapp_prod"}, []Report{staging, prod}, th, now)
 	want := "1 instance(s) OK\n" +
-		"myapp_prod OK: 2 worker(s), 2/2 booted, threads 1/10 busy, backlog 0, rss max 300MB\n" +
-		"ignored: myapp_staging"
+		"myapp_prod OK: 2 worker(s), 2/2 booted, threads 1/10 busy, backlog 0, rss max 300MB"
 	if got.State != sensu.CheckStateOK || got.Message != want {
 		t.Errorf("evaluate() = %d %q\nwant 0 %q", got.State, got.Message, want)
 	}
@@ -305,8 +304,8 @@ func TestEvaluateExpectPatterns(t *testing.T) {
 	}{
 		{[]string{"*"}, sensu.CheckStateCritical, "1/3 instance(s) in trouble"},
 		{[]string{"*_prod"}, sensu.CheckStateOK, "2 instance(s) OK\napi_prod OK"},
-		{[]string{"*_prod", "other_prod"}, sensu.CheckStateCritical, "other_prod CRITICAL: not running\nignored: myapp_staging"},
-		{[]string{"*_preprod"}, sensu.CheckStateOK, "no puma instance checked, ignored: api_prod, myapp_prod, myapp_staging"},
+		{[]string{"*_prod", "other_prod"}, sensu.CheckStateCritical, "other_prod CRITICAL: not running"},
+		{[]string{"*_preprod"}, sensu.CheckStateOK, "no puma instance checked"},
 	}
 	for _, tt := range tests {
 		got := evaluate(tt.expected, reports, th, now)

@@ -41,7 +41,7 @@ From the control app, when the state file is found:
 
 An instance without state file or without control app is checked from its processes only, and stays OK.
 
-`--expect` lists the instances to check: the other running instances (e.g. a staging not worth an alert) are ignored, only named on an `ignored:` line.
+`--expect` lists the instances to check: the other running instances (e.g. a staging not worth an alert) are ignored, absent from the output.
 
 - A name (`myapp_prod`) must be running: CRITICAL if not.
 - A pattern (`*_prod`, `myapp_*`) checks the running instances it matches, without requiring any: a stopped instance goes unnoticed.
@@ -53,7 +53,6 @@ The output gives one line per instance, the state is the worst one:
 check-puma-status CRITICAL: 1/2 instance(s) in trouble
 myapp_api_prod OK: 2 worker(s), 2/2 booted, threads 1/4 busy, backlog 0, rss max 312MB
 myapp_prod CRITICAL: threads 4/4 busy (100%)
-ignored: myapp_staging
 ```
 
 Workers report their thread pool to the master at checkin, every 5 seconds: busy threads and backlog are a 5-second-old snapshot.

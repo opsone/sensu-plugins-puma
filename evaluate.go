@@ -53,23 +53,19 @@ type instanceResult struct {
 
 // evaluate turns the discovered instances into a check result: one summary line, then one line per
 // instance. With expected tags (names or patterns), only the matching instances are checked, the
-// others are listed as ignored; expected names without wildcard must be running.
+// others are left out; expected names without wildcard must be running.
 // Issues (unreadable state files) are warnings, reported only when a checked instance has no state
 // file: they may hide its stats.
 func evaluate(expected []string, reports []Report, th Thresholds, now time.Time, issues ...string) Result {
 	byTag := map[string]Report{}
-	var ignored []string
 	for _, r := range reports {
-		if !selected(expected, r.Instance.Tag) {
-			ignored = append(ignored, r.Instance.Tag)
-			continue
+		if selected(expected, r.Instance.Tag) {
+			byTag[r.Instance.Tag] = r
 		}
-		byTag[r.Instance.Tag] = r
 	}
 	tags := slices.Concat(slices.Collect(maps.Keys(byTag)), required(expected))
 	slices.Sort(tags)
 	tags = slices.Compact(tags)
-	slices.Sort(ignored)
 
 	stateMissing := false
 	for _, r := range byTag {
@@ -81,8 +77,8 @@ func evaluate(expected []string, reports []Report, th Thresholds, now time.Time,
 
 	if len(tags) == 0 && len(issues) == 0 {
 		msg := "no puma instance found"
-		if len(ignored) > 0 {
-			msg = "no puma instance checked, ignored: " + strings.Join(ignored, ", ")
+		if len(reports) > 0 {
+			msg = "no puma instance checked"
 		}
 		return Result{sensu.CheckStateOK, msg}
 	}
@@ -113,9 +109,6 @@ func evaluate(expected []string, reports []Report, th Thresholds, now time.Time,
 		for _, issue := range issues {
 			lines = append(lines, "state file WARNING: "+issue)
 		}
-	}
-	if len(ignored) > 0 {
-		lines = append(lines, "ignored: "+strings.Join(ignored, ", "))
 	}
 	return Result{worst, summary + "\n" + strings.Join(lines, "\n")}
 }
