@@ -53,7 +53,7 @@ func workerStatus(pid, index, busy, backlog int) WorkerStatus {
 }
 
 func TestEvaluateHealthy(t *testing.T) {
-	got := evaluate([]string{"myapp_prod"}, []Report{healthy("myapp_prod")}, th, now)
+	got := evaluate([]string{"myapp_prod"}, []Report{healthy("myapp_prod")}, th, now, nil)
 	want := "1 instance(s) OK\nmyapp_prod OK: 2 worker(s), 2/2 booted, threads 1/10 busy, backlog 0, rss max 300MB"
 	if got.State != sensu.CheckStateOK || got.Message != want {
 		t.Errorf("evaluate() = %d %q, want 0 %q", got.State, got.Message, want)
@@ -61,7 +61,7 @@ func TestEvaluateHealthy(t *testing.T) {
 }
 
 func TestEvaluateNothing(t *testing.T) {
-	got := evaluate(nil, nil, th, now)
+	got := evaluate(nil, nil, th, now, nil)
 	if got.State != sensu.CheckStateOK || got.Message != "no puma instance found" {
 		t.Errorf("evaluate() = %+v", got)
 	}
@@ -261,7 +261,7 @@ func TestEvaluate(t *testing.T) {
 			if tt.mutate != nil {
 				tt.mutate(&r)
 			}
-			got := evaluate(tt.expected, []Report{r}, th, now)
+			got := evaluate(tt.expected, []Report{r}, th, now, nil)
 			if got.State != tt.state || !strings.Contains(got.Message, tt.contains) {
 				t.Errorf("evaluate() = %d %q\nwant %d containing %q", got.State, got.Message, tt.state, tt.contains)
 			}
@@ -274,7 +274,7 @@ func TestEvaluateIgnored(t *testing.T) {
 	staging.Instance.Workers = nil // would be CRITICAL if checked
 	prod := healthy("myapp_prod")
 
-	got := evaluate([]string{"myapp_prod"}, []Report{staging, prod}, th, now)
+	got := evaluate([]string{"myapp_prod"}, []Report{staging, prod}, th, now, nil)
 	want := "1 instance(s) OK\n" +
 		"myapp_prod OK: 2 worker(s), 2/2 booted, threads 1/10 busy, backlog 0, rss max 300MB"
 	if got.State != sensu.CheckStateOK || got.Message != want {
@@ -282,11 +282,11 @@ func TestEvaluateIgnored(t *testing.T) {
 	}
 
 	// Without --expect, every running instance is checked.
-	if got := evaluate(nil, []Report{staging, prod}, th, now); got.State != sensu.CheckStateCritical {
+	if got := evaluate(nil, []Report{staging, prod}, th, now, nil); got.State != sensu.CheckStateCritical {
 		t.Errorf("evaluate() without expect = %d %q, want CRITICAL", got.State, got.Message)
 	}
 
-	got = evaluate(nil, nil, th, now)
+	got = evaluate(nil, nil, th, now, nil)
 	if got.Message != "no puma instance found" {
 		t.Errorf("evaluate() = %q", got.Message)
 	}
@@ -308,7 +308,7 @@ func TestEvaluateExpectPatterns(t *testing.T) {
 		{[]string{"*_preprod"}, sensu.CheckStateOK, "no puma instance checked"},
 	}
 	for _, tt := range tests {
-		got := evaluate(tt.expected, reports, th, now)
+		got := evaluate(tt.expected, reports, th, now, nil)
 		if got.State != tt.state || !strings.Contains(got.Message, tt.want) {
 			t.Errorf("evaluate(%v) = %d %q\nwant %d containing %q", tt.expected, got.State, got.Message, tt.state, tt.want)
 		}

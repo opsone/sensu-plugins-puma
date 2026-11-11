@@ -22,7 +22,7 @@ From the processes (always available):
 | Workers without master | CRITICAL |
 | No worker process / fewer than `--min-workers` (default 2) | CRITICAL / WARNING |
 | Several masters with the same tag | WARNING |
-| Worker younger than `--worker-min-age` under an older master (crash, killed) | WARNING |
+| Worker younger than `--worker-min-age` under an older master (crash, killed), unless every worker is young (hot restart) | WARNING |
 | Worker RSS above `--rss-warn` / `--rss-crit` | WARNING / CRITICAL |
 
 From the control app, when the state file is found:
@@ -40,6 +40,16 @@ From the control app, when the state file is found:
 | Instance not in cluster mode | WARNING |
 
 An instance without state file or without control app is checked from its processes only, and stays OK.
+
+### Grace delays
+
+A restart or a load peak is not a problem by itself: these conditions are only reported once they last.
+
+- `--restart-grace` (default 300 seconds): instance or master not running, orphan workers, missing worker processes, workers not booted, control app unreachable. Every condition of an instance counts in one restart episode, ended when none is left.
+- `--load-grace` (default 180 seconds): busy threads, saturated worker, backlog. A peak of a minute (slow requests, bots) is not reported.
+- A hot restart (`pumactl restart`, `SIGUSR2`) respawns every worker under the same master: young workers are not reported as restarted when all of them are.
+
+Within the grace delay, the instance is OK and its line tells it (`threads 9/10 busy (90%) for 1m0s, within grace`); past it, the duration is given (`master not running for 5m12s`). The check sees one instant: it remembers since when each condition has been seen in a state file, `check-puma-status.json` in `--state-dir` (default `/var/cache/sensu/sensu-agent`, the agent cache directory, writable by the `sensu` user). Without usable state file, the conditions are reported at once with a `grace WARNING` line. A grace of 0 reports at once.
 
 `--expect` lists the instances to check: the other running instances (e.g. a staging not worth an alert) are ignored, absent from the output.
 
@@ -118,8 +128,11 @@ check-puma-status --state-glob <glob> [flags]
 | `--worker-min-age` | `CHECK_PUMA_WORKER_MIN_AGE` | `60` | Seconds under which a worker under an older master is reported as restarted |
 | `--rss-warn` | `CHECK_PUMA_RSS_WARN` | `0` | Worker RSS in MB for WARNING |
 | `--rss-crit` | `CHECK_PUMA_RSS_CRIT` | `0` | Worker RSS in MB for CRITICAL |
+| `--restart-grace` | `CHECK_PUMA_RESTART_GRACE` | `300` | Seconds an instance may be restarting before alerting, 0 reports at once |
+| `--load-grace` | `CHECK_PUMA_LOAD_GRACE` | `180` | Seconds busy threads or backlog may stay above their thresholds before alerting, 0 reports at once |
 | `--timeout` | `CHECK_PUMA_TIMEOUT` | `5` | Control app query timeout in seconds, per instance |
 | `--proc-root` | `CHECK_PUMA_PROC_ROOT` | `/proc` | procfs mount point |
+| `--state-dir` | `CHECK_PUMA_STATE_DIR` | `/var/cache/sensu/sensu-agent` | Directory of the state file of the grace delays |
 
 A threshold set to 0 disables its test. Lists (`--state-glob`, `--expect`) are repeatable or comma separated, also in their environment variable. A missing `--state-glob` or an invalid pattern is UNKNOWN.
 
@@ -149,6 +162,8 @@ annotations:
   puma_worker_min_age: "60"                  # seconds, default 60
   puma_rss_warn: "1200"                      # MB per worker, default 0 (disabled)
   puma_rss_crit: "1500"                      # MB per worker, default 0 (disabled)
+  puma_restart_grace: "300"                  # seconds, default 300
+  puma_load_grace: "180"                     # seconds, default 180
   puma_timeout: "5"                          # seconds, default 5
 ```
 
@@ -173,6 +188,8 @@ spec:
     - CHECK_PUMA_WORKER_MIN_AGE={{ .annotations.puma_worker_min_age | default "60" }}
     - CHECK_PUMA_RSS_WARN={{ .annotations.puma_rss_warn | default "0" }}
     - CHECK_PUMA_RSS_CRIT={{ .annotations.puma_rss_crit | default "0" }}
+    - CHECK_PUMA_RESTART_GRACE={{ .annotations.puma_restart_grace | default "300" }}
+    - CHECK_PUMA_LOAD_GRACE={{ .annotations.puma_load_grace | default "180" }}
     - CHECK_PUMA_TIMEOUT={{ .annotations.puma_timeout | default "5" }}
   runtime_assets:
     - opsone/sensu-plugins-puma

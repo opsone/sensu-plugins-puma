@@ -26,8 +26,11 @@ type Config struct {
 	WorkerMinAge int
 	RSSWarn      int
 	RSSCrit      int
+	RestartGrace int
+	LoadGrace    int
 	Timeout      int
 	ProcRoot     string
+	StateDir     string
 }
 
 var (
@@ -101,12 +104,24 @@ var (
 			Usage: "Worker RSS in MB for CRITICAL (0 disables)", Value: &plugin.RSSCrit,
 		},
 		&sensu.PluginConfigOption[int]{
+			Path: "restart-grace", Env: "CHECK_PUMA_RESTART_GRACE", Argument: "restart-grace", Default: 300,
+			Usage: "Seconds an instance may be restarting (not running, missing or booting workers) before alerting (0: immediately)", Value: &plugin.RestartGrace,
+		},
+		&sensu.PluginConfigOption[int]{
+			Path: "load-grace", Env: "CHECK_PUMA_LOAD_GRACE", Argument: "load-grace", Default: 180,
+			Usage: "Seconds busy threads or backlog may stay above their thresholds before alerting (0: immediately)", Value: &plugin.LoadGrace,
+		},
+		&sensu.PluginConfigOption[int]{
 			Path: "timeout", Env: "CHECK_PUMA_TIMEOUT", Argument: "timeout", Default: 5,
 			Usage: "Control app query timeout in seconds, per instance", Value: &plugin.Timeout,
 		},
 		&sensu.PluginConfigOption[string]{
 			Path: "proc-root", Env: "CHECK_PUMA_PROC_ROOT", Argument: "proc-root", Default: "/proc",
 			Usage: "procfs mount point", Value: &plugin.ProcRoot,
+		},
+		&sensu.PluginConfigOption[string]{
+			Path: "state-dir", Env: "CHECK_PUMA_STATE_DIR", Argument: "state-dir", Default: "/var/cache/sensu/sensu-agent",
+			Usage: "Directory of the file remembering the conditions under a grace delay (writable by the agent user)", Value: &plugin.StateDir,
 		},
 	}
 )
@@ -122,6 +137,7 @@ func checkArgs(event *corev2.Event) (int, error) {
 		"backlog-warn": plugin.BacklogWarn, "backlog-crit": plugin.BacklogCrit, "checkin-max": plugin.CheckinMax,
 		"phase-max": plugin.PhaseMax, "worker-min-age": plugin.WorkerMinAge,
 		"rss-warn": plugin.RSSWarn, "rss-crit": plugin.RSSCrit,
+		"restart-grace": plugin.RestartGrace, "load-grace": plugin.LoadGrace,
 	} {
 		if v < 0 {
 			return sensu.CheckStateUnknown, fmt.Errorf("--%s must not be negative", name)
@@ -167,7 +183,16 @@ func executeCheck(event *corev2.Event) (int, error) {
 		reports = append(reports, c.collect(inst))
 	}
 
-	result := evaluate(expected, reports, thresholds(), time.Now(), issues...)
+	now := time.Now()
+	var tr *Tracker
+	if plugin.RestartGrace > 0 || plugin.LoadGrace > 0 {
+		tr = LoadTracker(plugin.StateDir, now)
+	}
+	th := thresholds()
+	result := evaluate(expected, reports, th, now, tr, issues...)
+	if tr.Save() != nil {
+		result = evaluate(expected, reports, th, now, tr, issues...) // grace state not kept: no grace
+	}
 	fmt.Printf("%s %s: %s\n", plugin.Name, stateLabel(result.State), result.Message)
 	return result.State, nil
 }
@@ -197,5 +222,7 @@ func thresholds() Thresholds {
 		WorkerMinAge: time.Duration(plugin.WorkerMinAge) * time.Second,
 		RSSWarn:      uint64(plugin.RSSWarn) * 1024 * 1024,
 		RSSCrit:      uint64(plugin.RSSCrit) * 1024 * 1024,
+		RestartGrace: time.Duration(plugin.RestartGrace) * time.Second,
+		LoadGrace:    time.Duration(plugin.LoadGrace) * time.Second,
 	}
 }

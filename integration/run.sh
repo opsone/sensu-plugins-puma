@@ -56,9 +56,11 @@ expect() { # <exit code> [VAR=value...] <args>...
 # State files matched by master PID: deployment directories unrelated to the tags,
 # stale file of /srv/oldapp ignored. Stats through the TCP control app.
 glob='/srv/*/tmp/pids/puma.state'
+state=$(dx runuser -u nobody -- mktemp -d) # grace state
 
 expect 0 -s "$glob" --expect myapp_prod,myapp_staging
 expect 2 -s "$glob" --expect myapp_prod,myapp_staging,other_prod
+expect 0 -s "$glob" --expect myapp_prod,myapp_staging,other_prod --state-dir "$state" # within the restart grace
 
 # Invalid configuration.
 expect 3 --expect myapp_prod
@@ -86,6 +88,9 @@ fi
 for _ in $(seq 4); do docker exec -d "$container" curl -s localhost:3000/sleep; done
 sleep 6
 expect 2 -s "$glob" --expect myapp_prod
+expect 0 -s "$glob" --expect myapp_prod --state-dir "$state"                 # within the load grace
+sleep 1
+expect 2 -s "$glob" --expect myapp_prod --state-dir "$state" --load-grace 1  # past the load grace
 sleep 3
 
 # Hung worker: no checkin while stopped (Puma workers check in every 5s).
@@ -108,9 +113,25 @@ wait_workers myapp_staging
 expect 1 -s "$glob" --worker-min-age 5
 expect 0 -s "$glob" --expect myapp_prod --worker-min-age 5
 
+# Hot restart: every worker respawned under the same master, control app and workers booting
+# within the restart grace.
+old_workers=$(dx pgrep -f "cluster worker .* \[myapp_prod\]" | sort | xargs)
+dx kill -USR2 "$(dx pgrep -f "puma .* \[myapp_prod\]$")"
+sleep 2
+expect 0 -s "$glob" --expect myapp_prod --worker-min-age 15 --state-dir "$state"
+for _ in $(seq 30); do
+  new_workers=$(dx pgrep -f "cluster worker .* \[myapp_prod\]" | sort | xargs || true)
+  [[ $(wc -w <<<"$new_workers") == 2 && -z $(comm -12 <(tr ' ' '\n' <<<"$old_workers") <(tr ' ' '\n' <<<"$new_workers")) ]] && break
+  sleep 1
+done
+echo "     workers $old_workers -> $new_workers"
+sleep 2
+expect 0 -s "$glob" --expect myapp_prod --worker-min-age 15 --state-dir "$state"
+
 # Master killed: its workers exit, the instance is gone.
 dx pkill -KILL -f "puma .* \[myapp_staging\]$"
 sleep 3
 expect 2 -s "$glob" --expect myapp_prod,myapp_staging
+expect 0 -s "$glob" --expect myapp_prod,myapp_staging --state-dir "$state" # within the restart grace
 
 exit $failures

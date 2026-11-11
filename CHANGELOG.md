@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0] - 2026-11-11
+
+### Added
+- `--restart-grace` (default 300 seconds): instance or master not running, orphan workers, missing worker processes, workers not booted and control app unreachable are only reported after this delay, as one restart episode per instance.
+- `--load-grace` (default 180 seconds): busy threads, saturated worker and backlog are only reported when they last this delay.
+- `--state-dir` (default `/var/cache/sensu/sensu-agent`): state file of the grace delays. Without usable state file, the conditions are reported at once with a `grace WARNING` line.
+
+### Changed
+- Young workers are no longer reported as restarted when every worker of the instance is young (hot restart).
+- A condition within its grace delay is shown on the OK line of the instance (`… for 40s, within grace`).
+
 ## [0.3.1] - 2026-11-10
 
 ### Changed

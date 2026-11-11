@@ -131,7 +131,7 @@ func TestEvaluateStateIssues(t *testing.T) {
 	// The unreadable file may be the state file of an instance without one: warning.
 	noState := healthy("myapp_prod")
 	noState.Stats, noState.StatePID, noState.Note, noState.NoState = nil, 0, "no state file", true
-	got := evaluate(nil, []Report{noState}, th, now, issue)
+	got := evaluate(nil, []Report{noState}, th, now, nil, issue)
 	want := "1 instance(s) OK, 1 state file issue(s)\n" +
 		"myapp_prod OK: 2 worker(s), no stats (no state file), rss max 300MB\n" +
 		"state file WARNING: " + issue
@@ -140,13 +140,13 @@ func TestEvaluateStateIssues(t *testing.T) {
 	}
 
 	// Every checked instance has its state file: the unreadable one belongs to another app.
-	got = evaluate(nil, []Report{healthy("myapp_prod")}, th, now, issue)
+	got = evaluate(nil, []Report{healthy("myapp_prod")}, th, now, nil, issue)
 	if got.State != sensu.CheckStateOK || strings.Contains(got.Message, "state file") {
 		t.Errorf("evaluate() = %d %q, want OK without state file issue", got.State, got.Message)
 	}
 
 	// Same when the instance without state file is ignored.
-	got = evaluate([]string{"myapp_staging"}, []Report{noState, healthy("myapp_staging")}, th, now, issue)
+	got = evaluate([]string{"myapp_staging"}, []Report{noState, healthy("myapp_staging")}, th, now, nil, issue)
 	if got.State != sensu.CheckStateOK || strings.Contains(got.Message, "state file") {
 		t.Errorf("evaluate() = %d %q, want OK without state file issue", got.State, got.Message)
 	}
