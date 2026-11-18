@@ -3,10 +3,16 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-image=check-puma-integration
+# Puma version under test (PUMA_VERSION=7.1.0 ./run.sh). Before 7.2: no data_only, the control
+# app without state file runs with a fixed token.
+version=${PUMA_VERSION:-8.0.2}
+legacy=false
+[[ $(printf '%s\n' 7.2 "$version" | sort -V | head -1) != 7.2 ]] && legacy=true
+
+image=check-puma-integration:$version
 container=check-puma-integration-$$
 
-docker build -q -t "$image" . >/dev/null
+docker build -q --build-arg PUMA_VERSION="$version" -t "$image" . >/dev/null
 docker run -d --rm --name "$container" "$image" >/dev/null
 trap 'docker stop -t 1 "$container" >/dev/null' EXIT
 
@@ -30,12 +36,19 @@ wait_workers() { # <tag>
   exit 1
 }
 
-echo "$(dx puma --version)"
+echo "$(dx puma --version)$($legacy && echo ' (before 7.2: no data_only)')"
 # Staging runs without control app: the check falls back on process checks.
 start myapp_prod /srv/myapp-production 3000 9293
 start myapp_staging /srv/myapp-staging 3001
-# API: control app without state file nor token, given with --control.
-start myapp_api_prod /srv/myapp-api 3002 9294 PUMA_NO_STATE=1
+# API: control app without state file, given with --control. Without token (no_token, data_only)
+# from Puma 7.2, with a fixed token before.
+if $legacy; then
+  start myapp_api_prod /srv/myapp-api 3002 9294 PUMA_CONTROL_TOKEN=s3cret
+  ctl_token=(--control-token s3cret) ctl_token_env=(CHECK_PUMA_CONTROL_TOKEN=s3cret)
+else
+  start myapp_api_prod /srv/myapp-api 3002 9294 PUMA_NO_STATE=1
+  ctl_token=() ctl_token_env=()
+fi
 wait_workers myapp_prod
 wait_workers myapp_staging
 wait_workers myapp_api_prod
@@ -79,19 +92,26 @@ expect 0 CHECK_PUMA_STATE_GLOB="/home/deploy/*/shared/tmp/pids/puma.state,$glob"
 expect 2 CHECK_PUMA_STATE_GLOB="$glob" CHECK_PUMA_EXPECT='*_prod,other_prod'
 
 # Control apps given with --control, matched to the instances by worker PID. 9295: nothing listens.
-expect 0 -c 9294 --expect myapp_api_prod
-expect 0 CHECK_PUMA_CONTROL='9294,9295' CHECK_PUMA_STATE_GLOB="$glob" CHECK_PUMA_EXPECT='*_prod'
+expect 0 -c 9294 ${ctl_token[@]+"${ctl_token[@]}"} --expect myapp_api_prod
+expect 0 ${ctl_token_env[@]+"${ctl_token_env[@]}"} CHECK_PUMA_CONTROL='9294,9295' CHECK_PUMA_STATE_GLOB="$glob" CHECK_PUMA_EXPECT='*_prod'
 # myapp_prod without stats source (no --state-glob, 9293 needs its token): 9295 may be its one.
-expect 1 -c 9294,9295 --expect myapp_prod,myapp_api_prod
+expect 1 -c 9294,9295 ${ctl_token[@]+"${ctl_token[@]}"} --expect myapp_prod,myapp_api_prod
 expect 3 -c 9293-9295 --expect myapp_prod
+if $legacy; then
+  # Wrong token: the control app refuses, the instance has no stats.
+  expect 1 -c 9294 --control-token wrong --expect myapp_api_prod
+fi
 
-# data_only: the control app refuses the commands changing the server state.
-token=$(dx sed -n 's/^control_auth_token: *//p' /srv/myapp-production/tmp/pids/puma.state)
-code=$(dx curl -s -o /dev/null -w '%{http_code}' "localhost:9293/stop?token=$token")
-if [[ $code == 200 ]]; then
-  echo "FAIL control app /stop answered $code despite data_only"; failures=$((failures + 1))
-else
-  echo "ok   control app /stop refused ($code)"
+# data_only (Puma 7.2+): the control app refuses the commands changing the server state.
+# Before 7.2, /stop would stop the instance: not tried.
+if ! $legacy; then
+  token=$(dx sed -n 's/^control_auth_token: *//p' /srv/myapp-production/tmp/pids/puma.state)
+  code=$(dx curl -s -o /dev/null -w '%{http_code}' "localhost:9293/stop?token=$token")
+  if [[ $code == 200 ]]; then
+    echo "FAIL control app /stop answered $code despite data_only"; failures=$((failures + 1))
+  else
+    echo "ok   control app /stop refused ($code)"
+  fi
 fi
 
 # Thread saturation: 2 workers x 2 threads, 4 slow requests (8s). Workers report

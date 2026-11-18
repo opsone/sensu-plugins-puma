@@ -78,18 +78,22 @@ if ENV['PUMA_CONTROL_PORT']
 end
 ```
 
-Or, for a Puma without `data_only` (older versions), a state file holding the control token, found with `--state-glob`:
+`data_only` exists since Puma 7.2. Before, it is silently ignored: the control app also serves `/stop`, `/halt`, `/restart`, so it must keep its token. The token is generated at boot and written in a state file, found with `--state-glob`:
 
 ```ruby
-# Monitoring (check-puma-status): state file and control app
+# Monitoring (check-puma-status), Puma < 7.2: state file and control app with token
 if ENV['PUMA_CONTROL_PORT']
   state_path 'tmp/pids/puma.state'
-  activate_control_app "tcp://127.0.0.1:#{ENV['PUMA_CONTROL_PORT']}", data_only: true
+  activate_control_app "tcp://127.0.0.1:#{ENV['PUMA_CONTROL_PORT']}"
 end
 ```
 
+A fixed token (`auth_token: ENV['PUMA_CONTROL_TOKEN']`) without state file works too, with `--control` and `--control-token`, but the token then lives in the check definition. Any holder of the token can stop the instance.
+
+Tested with Puma 5.6, 6.6, 7.1 and 8.0 (`make integration`, `PUMA_VERSIONS` to change them).
+
 - One control port per instance, set in its systemd unit (`Environment=PUMA_CONTROL_PORT=9293`): `myapp_prod` and `myapp_staging` on the same host need different ports. Convention: `9293` (the `pumactl` default) for the first instance of a host, then `9294`, `9295`… for the next ones. Avoid `3000`/`3001`, often taken by the applications themselves. With a state file, the check reads the URL from it and does not need to know the ports; without, the ports are listed with `--control`.
-- `data_only: true` restricts the control app to the read-only endpoints (`/stats`, `/gc-stats`…): without it, `/stop`, `/halt` or `/restart` are reachable by any local user holding the token. `no_token: true` is only acceptable with `data_only: true`: any local user may then read the stats, nothing more.
+- `data_only: true` (Puma 7.2+) restricts the control app to the read-only endpoints (`/stats`, `/gc-stats`…): without it, `/stop`, `/halt` or `/restart` are reachable by any local user holding the token. `no_token: true` is only acceptable with `data_only: true`: any local user may then read the stats, nothing more.
 - With a state file, no `auth_token`: Puma generates one at boot and writes it in the state file, where the check reads it.
 - `tmp/pids` must be shared between releases (Capistrano `linked_dirs`).
 

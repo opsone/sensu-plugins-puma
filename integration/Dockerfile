@@ -1,8 +1,10 @@
 FROM ruby:3.3.13-slim
+ARG PUMA_VERSION=8.0.2
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl procps build-essential \
- && gem install --no-document puma -v 8.0.2 \
- && gem install --no-document rack -v 3.2.8 \
+ && gem install --no-document puma -v "$PUMA_VERSION" \
+ && case "$PUMA_VERSION" in [0-5].*) rack='~> 2.2' ;; *) rack=3.2.8 ;; esac \
+ && gem install --no-document rack -v "$rack" \
  && apt-get purge -y --auto-remove build-essential \
  && rm -rf /var/lib/apt/lists/*
 # Deployment directories do not match the Puma tags (myapp_prod, myapp_staging).

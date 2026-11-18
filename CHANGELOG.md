@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- README: the configuration for Puma before 7.2 no longer sets `data_only`, ignored by these versions.
+- Integration tests run against Puma 8.0, 7.1, 6.6 and 5.6 (`PUMA_VERSIONS`), the versions before 7.2 with a control app keeping its token.
+
 ## [0.5.0] - 2026-11-18
 
 ### Added

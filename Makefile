@@ -24,8 +24,11 @@ build:
 linux:
 	GOOS=linux GOARCH=$(shell go env GOARCH) CGO_ENABLED=0 go build -o integration/$(BINARY) .
 
+# Puma versions of the integration tests: current, and before 7.2 (no data_only).
+PUMA_VERSIONS ?= 8.0.2 7.1.0 6.6.1 5.6.9
+
 integration: linux
-	./integration/run.sh
+	set -e; for v in $(PUMA_VERSIONS); do echo "== Puma $$v"; PUMA_VERSION=$$v ./integration/run.sh; done
 
 # Sensu assets: one tar.gz per arch with bin/check-puma-status, plus a sha512 checksums file.
 dist: test
