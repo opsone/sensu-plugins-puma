@@ -34,7 +34,7 @@ type Report struct {
 	Stats    *Stats // nil when the control app was not queried or failed
 	StatsErr error  // control app expected but unusable
 	Note     string // why stats are missing, informational
-	NoState  bool   // no state file found for the instance
+	NoState  bool   // no stats source (state file, --control endpoint) found for the instance
 }
 
 // Result is the outcome of the evaluation.
@@ -88,9 +88,9 @@ func loadKey(tag, what string) string { return "load:" + tag + ":" + what }
 // evaluate turns the discovered instances into a check result: one summary line, then one line per
 // instance. With expected tags (names or patterns), only the matching instances are checked, the
 // others are left out; expected names without wildcard must be running.
-// Issues (unreadable state files) are warnings, reported only when a checked instance has no state
-// file: they may hide its stats.
-func evaluate(expected []string, reports []Report, th Thresholds, now time.Time, tr *Tracker, issues ...string) Result {
+// Issues (unreadable state files, unreachable control apps) are warnings, reported only when a checked
+// instance has no stats source: they may hide its stats.
+func evaluate(expected []string, reports []Report, th Thresholds, now time.Time, tr *Tracker, issues ...Issue) Result {
 	byTag := map[string]Report{}
 	for _, r := range reports {
 		if selected(expected, r.Instance.Tag) {
@@ -139,9 +139,9 @@ func evaluate(expected []string, reports []Report, th Thresholds, now time.Time,
 	}
 	if len(issues) > 0 {
 		worst = max(worst, sensu.CheckStateWarning)
-		summary += fmt.Sprintf(", %d state file issue(s)", len(issues))
+		summary += fmt.Sprintf(", %d stats source issue(s)", len(issues))
 		for _, issue := range issues {
-			lines = append(lines, "state file WARNING: "+issue)
+			lines = append(lines, issue.Source+" WARNING: "+issue.Text)
 		}
 	}
 	if err := tr.Err(); err != nil {

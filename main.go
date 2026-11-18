@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,6 +17,8 @@ type Config struct {
 	sensu.PluginConfig
 	Expect       []string
 	StateGlobs   []string
+	Controls     []string
+	ControlToken string
 	MinWorkers   int
 	BusyWarn     int
 	BusyCrit     int
@@ -58,8 +61,22 @@ var (
 			Argument:  "state-glob",
 			Shorthand: "s",
 			Default:   []string{},
-			Usage:     "Glob of Puma state files, matched to the instances by master PID (repeatable or comma separated). Required",
+			Usage:     "Glob of Puma state files, matched to the instances by master PID (repeatable or comma separated, none for no glob). Required without --control",
 			Value:     &plugin.StateGlobs,
+		},
+		&sensu.SlicePluginConfigOption[string]{
+			Path:      "control",
+			Env:       "CHECK_PUMA_CONTROL",
+			Argument:  "control",
+			Shorthand: "c",
+			Default:   []string{},
+			Usage:     "Puma control app, port on 127.0.0.1, tcp://host:port or unix:///path, matched to the instances by worker PID, for instances without state file (repeatable or comma separated, none for no control app). Required without --state-glob",
+			Value:     &plugin.Controls,
+		},
+		&sensu.PluginConfigOption[string]{
+			Path: "control-token", Env: "CHECK_PUMA_CONTROL_TOKEN", Argument: "control-token", Default: "",
+			Usage: "Token of the --control apps, empty when started with no_token", Value: &plugin.ControlToken,
+			Secret: true,
 		},
 		&sensu.PluginConfigOption[int]{
 			Path: "min-workers", Env: "CHECK_PUMA_MIN_WORKERS", Argument: "min-workers", Default: 2,
@@ -146,12 +163,23 @@ func checkArgs(event *corev2.Event) (int, error) {
 	if plugin.Timeout <= 0 {
 		return sensu.CheckStateUnknown, fmt.Errorf("--timeout must be greater than 0")
 	}
-	// Environment variables (CHECK_PUMA_EXPECT, CHECK_PUMA_STATE_GLOB) hold comma separated lists.
+	// Environment variables (CHECK_PUMA_EXPECT, CHECK_PUMA_STATE_GLOB, CHECK_PUMA_CONTROL) hold comma separated lists.
 	plugin.Expect = splitList(plugin.Expect)
-	plugin.StateGlobs = splitList(plugin.StateGlobs)
-	if len(plugin.StateGlobs) == 0 {
-		return sensu.CheckStateUnknown, fmt.Errorf("--state-glob is required")
+	// "none": empty list, for the check definitions (Sensu rejects an empty environment variable).
+	plugin.StateGlobs = slices.DeleteFunc(splitList(plugin.StateGlobs), isNone)
+	plugin.Controls = slices.DeleteFunc(splitList(plugin.Controls), isNone)
+	if len(plugin.StateGlobs) == 0 && len(plugin.Controls) == 0 {
+		return sensu.CheckStateUnknown, fmt.Errorf("--state-glob or --control is required")
 	}
+	for i, v := range plugin.Controls {
+		u, err := ParseControl(v)
+		if err != nil {
+			return sensu.CheckStateUnknown, fmt.Errorf("invalid --control %q: %w", v, err)
+		}
+		plugin.Controls[i] = u
+	}
+	slices.Sort(plugin.Controls)
+	plugin.Controls = slices.Compact(plugin.Controls)
 	for _, g := range plugin.StateGlobs {
 		if _, err := filepath.Match(g, ""); err != nil {
 			return sensu.CheckStateUnknown, fmt.Errorf("invalid --state-glob %q: %w", g, err)
@@ -172,7 +200,13 @@ func executeCheck(event *corev2.Event) (int, error) {
 	}
 
 	states, issues := indexStates(plugin.StateGlobs)
-	c := collector{states: states, timeout: time.Duration(plugin.Timeout) * time.Second}
+	c := &collector{
+		states:   states,
+		globs:    len(plugin.StateGlobs) > 0,
+		controls: plugin.Controls,
+		token:    plugin.ControlToken,
+		timeout:  time.Duration(plugin.Timeout) * time.Second,
+	}
 	expected := plugin.Expect
 	reports := make([]Report, 0, len(instances))
 	for _, inst := range instances {
@@ -182,6 +216,7 @@ func executeCheck(event *corev2.Event) (int, error) {
 		}
 		reports = append(reports, c.collect(inst))
 	}
+	issues = append(issues, c.issues...)
 
 	now := time.Now()
 	var tr *Tracker
@@ -209,6 +244,8 @@ func splitList(values []string) []string {
 	}
 	return tags
 }
+
+func isNone(v string) bool { return v == "none" }
 
 func thresholds() Thresholds {
 	return Thresholds{

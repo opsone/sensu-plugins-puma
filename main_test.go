@@ -11,6 +11,7 @@ func TestCheckArgs(t *testing.T) {
 	valid := func() Config {
 		return Config{
 			StateGlobs: []string{"/home/deploy/*/shared/tmp/pids/puma.state,/var/www/*/shared/tmp/pids/puma.state"},
+			Controls:   []string{"9294, 9293", "tcp://127.0.0.1:9293"},
 			Expect:     []string{"myapp_prod, *_api"},
 			MinWorkers: 2, BusyWarn: 80, BusyCrit: 95, Timeout: 5,
 		}
@@ -21,7 +22,10 @@ func TestCheckArgs(t *testing.T) {
 		wantErr string
 	}{
 		{name: "valid"},
-		{name: "state glob required", mutate: func(c *Config) { c.StateGlobs = []string{""} }, wantErr: "--state-glob is required"},
+		{name: "state glob or control required", mutate: func(c *Config) { c.StateGlobs, c.Controls = []string{""}, []string{" "} }, wantErr: "--state-glob or --control is required"},
+		{name: "control without state glob", mutate: func(c *Config) { c.StateGlobs, c.Controls = []string{"none"}, []string{"9293"} }, wantErr: "-"},
+		{name: "none for both", mutate: func(c *Config) { c.StateGlobs, c.Controls = []string{"none"}, []string{"none"} }, wantErr: "--state-glob or --control is required"},
+		{name: "invalid control", mutate: func(c *Config) { c.Controls = []string{"9293-9295"} }, wantErr: "invalid --control"},
 		{name: "invalid state glob", mutate: func(c *Config) { c.StateGlobs = []string{"/home/[/x"} }, wantErr: "invalid --state-glob"},
 		{name: "invalid expect pattern", mutate: func(c *Config) { c.Expect = []string{"myapp_[prod"} }, wantErr: "invalid --expect"},
 		{name: "negative threshold", mutate: func(c *Config) { c.RSSCrit = -1 }, wantErr: "--rss-crit must not be negative"},
@@ -37,6 +41,12 @@ func TestCheckArgs(t *testing.T) {
 				tt.mutate(&plugin)
 			}
 			state, err := checkArgs(nil)
+			if tt.wantErr == "-" { // valid, other lists
+				if err != nil || state != sensu.CheckStateOK || len(plugin.StateGlobs) != 0 {
+					t.Fatalf("checkArgs() = %d, %v, globs %q", state, err, plugin.StateGlobs)
+				}
+				return
+			}
 			if tt.wantErr == "" {
 				if err != nil || state != sensu.CheckStateOK {
 					t.Fatalf("checkArgs() = %d, %v", state, err)
@@ -44,6 +54,10 @@ func TestCheckArgs(t *testing.T) {
 				// Comma separated lists, as set through environment variables, are split.
 				if len(plugin.StateGlobs) != 2 || strings.Join(plugin.Expect, "|") != "myapp_prod|*_api" {
 					t.Errorf("globs = %q, expect = %q", plugin.StateGlobs, plugin.Expect)
+				}
+				// Ports become URLs, duplicates dropped.
+				if got := strings.Join(plugin.Controls, "|"); got != "tcp://127.0.0.1:9293|tcp://127.0.0.1:9294" {
+					t.Errorf("controls = %q", got)
 				}
 				return
 			}

@@ -10,7 +10,7 @@ puma: cluster worker 0: 12345 [myapp_prod]
 puma: cluster worker 1: 12345 [myapp_prod]
 ```
 
-The thread pool state comes from the Puma control app (`/stats`), located through the instance state file. No CGO, static binary, Linux only (`/proc`).
+The thread pool state comes from the Puma control app (`/stats`), located through the instance state file (`--state-glob`) or given directly (`--control`, no state file needed). No CGO, static binary, Linux only (`/proc`).
 
 ## Behavior
 
@@ -25,12 +25,12 @@ From the processes (always available):
 | Worker younger than `--worker-min-age` under an older master (crash, killed), unless every worker is young (hot restart) | WARNING |
 | Worker RSS above `--rss-warn` / `--rss-crit` | WARNING / CRITICAL |
 
-From the control app, when the state file is found:
+From the control app, when found through the state file or `--control`:
 
 | Situation | State |
 |---|---|
-| Control app unreachable | WARNING |
-| State file matching `--state-glob` unreadable | WARNING |
+| Control app of the state file unreachable | WARNING |
+| State file matching `--state-glob` unreadable, or `--control` app unreachable, while a checked instance has no stats | WARNING |
 | No worker booted / some workers not booted | CRITICAL / WARNING |
 | Worker without checkin for `--checkin-max` seconds (hung) | CRITICAL |
 | Phased restart lasting more than `--phase-max` minutes | WARNING |
@@ -39,7 +39,7 @@ From the control app, when the state file is found:
 | Queued requests (all workers) above `--backlog-warn` / `--backlog-crit` | WARNING / CRITICAL |
 | Instance not in cluster mode | WARNING |
 
-An instance without state file or without control app is checked from its processes only, and stays OK.
+An instance without state file, `--control` app or control app is checked from its processes only, and stays OK.
 
 ### Grace delays
 
@@ -72,21 +72,46 @@ Workers report their thread pool to the master at checkin, every 5 seconds: busy
 `config/puma.rb`:
 
 ```ruby
-# Monitoring (check-puma-status): state file and read-only control app
+# Monitoring (check-puma-status): read-only control app, without token, given to the check with --control
+if ENV['PUMA_CONTROL_PORT']
+  activate_control_app "tcp://127.0.0.1:#{ENV['PUMA_CONTROL_PORT']}", no_token: true, data_only: true
+end
+```
+
+Or, for a Puma without `data_only` (older versions), a state file holding the control token, found with `--state-glob`:
+
+```ruby
+# Monitoring (check-puma-status): state file and control app
 if ENV['PUMA_CONTROL_PORT']
   state_path 'tmp/pids/puma.state'
   activate_control_app "tcp://127.0.0.1:#{ENV['PUMA_CONTROL_PORT']}", data_only: true
 end
 ```
 
-- One control port per instance, set in its systemd unit (`Environment=PUMA_CONTROL_PORT=9293`): `myapp_prod` and `myapp_staging` on the same host need different ports. Convention: `9293` (the `pumactl` default) for the first instance of a host, then `9294`, `9295`… for the next ones. Avoid `3000`/`3001`, often taken by the applications themselves. The check reads the URL from the state file, it does not need to know the ports.
-- `data_only: true` restricts the control app to the read-only endpoints (`/stats`, `/gc-stats`…): without it, `/stop`, `/halt` or `/restart` are reachable by any local user holding the token.
-- No `auth_token`: Puma generates one at boot and writes it in the state file, where the check reads it.
+- One control port per instance, set in its systemd unit (`Environment=PUMA_CONTROL_PORT=9293`): `myapp_prod` and `myapp_staging` on the same host need different ports. Convention: `9293` (the `pumactl` default) for the first instance of a host, then `9294`, `9295`… for the next ones. Avoid `3000`/`3001`, often taken by the applications themselves. With a state file, the check reads the URL from it and does not need to know the ports; without, the ports are listed with `--control`.
+- `data_only: true` restricts the control app to the read-only endpoints (`/stats`, `/gc-stats`…): without it, `/stop`, `/halt` or `/restart` are reachable by any local user holding the token. `no_token: true` is only acceptable with `data_only: true`: any local user may then read the stats, nothing more.
+- With a state file, no `auth_token`: Puma generates one at boot and writes it in the state file, where the check reads it.
 - `tmp/pids` must be shared between releases (Capistrano `linked_dirs`).
 
 A unix socket control app (`unix://tmp/pids/pumactl.sock`) is supported too, but the Sensu agent then needs write permission on the socket.
 
 Puma is started in cluster mode with `--tag {app}_{env}`. The env is what follows the last underscore: `my_app_prod` → app `my_app`, env `prod`.
+
+## Control apps without state file
+
+The control apps are given with `--control` (repeatable or comma separated): a port on `127.0.0.1` (`9293`), `tcp://host:port` or `unix:///absolute/path.sock`. They are matched to the instances by **worker PID**: the `/stats` answer lists the PID of each worker, the check looks for the instance owning one of them. Ports do not need to follow the tags.
+
+```sh
+check-puma-status --control 9293,9294,9295
+```
+
+- Queried only when a checked instance has no state file, all at once within `--timeout`.
+- A port answering for an instance left out by `--expect` is ignored.
+- An unreachable port (instance stopped, port listed for later) is a WARNING only when a checked instance has no stats: it may be its one. A port answering for nobody is ignored.
+- A control app with a token (no `no_token`) needs `--control-token`, the same for every `--control` app.
+- An instance not in cluster mode has no worker in `/stats`: never matched, checked from its processes only.
+
+`--state-glob` and `--control` can be used together, e.g. while migrating: the state file of an instance comes first, `--control` is used for the instances without state file or whose state file has no control app.
 
 ## State file location
 
@@ -98,7 +123,7 @@ check-puma-status --state-glob '/home/deploy/*/shared/tmp/pids/puma.state' \
 ```
 
 - A stale state file (instance stopped, app removed) holds a PID no master has: it is ignored.
-- A matching state file that cannot be read (permissions, no `pid`) is a WARNING when a checked instance has no state file: it may be its one.
+- A matching state file that cannot be read (permissions, no `pid`) is a WARNING when a checked instance has no stats: it may be its one.
 - Globs are standard shell patterns, `**` is not supported.
 - An instance without matching state file is checked from its processes only.
 
@@ -111,12 +136,14 @@ sudo -u sensu check-puma-status --state-glob '/home/deploy/*/shared/tmp/pids/pum
 ## Usage
 
 ```
-check-puma-status --state-glob <glob> [flags]
+check-puma-status (--state-glob <glob> | --control <port>) [flags]
 ```
 
 | Flag | Environment variable | Default | Description |
 |---|---|---|---|
-| `-s`, `--state-glob` | `CHECK_PUMA_STATE_GLOB` | required | Glob of Puma state files, matched to the instances by master PID |
+| `-s`, `--state-glob` | `CHECK_PUMA_STATE_GLOB` | required without `--control` | Glob of Puma state files, matched to the instances by master PID |
+| `-c`, `--control` | `CHECK_PUMA_CONTROL` | required without `--state-glob` | Control app (`9293`, `tcp://host:port`, `unix:///path`), matched to the instances by worker PID |
+| `--control-token` | `CHECK_PUMA_CONTROL_TOKEN` | none (`no_token`) | Token of the `--control` apps |
 | `-e`, `--expect` | `CHECK_PUMA_EXPECT` | every instance | Puma tags (must run) or patterns (`*_prod`) to check, the others are ignored |
 | `--min-workers` | `CHECK_PUMA_MIN_WORKERS` | `2` | Minimum worker processes per master (WARNING below, CRITICAL at 0) |
 | `--busy-warn` | `CHECK_PUMA_BUSY_WARN` | `80` | Busy threads %, all workers, for WARNING |
@@ -134,7 +161,7 @@ check-puma-status --state-glob <glob> [flags]
 | `--proc-root` | `CHECK_PUMA_PROC_ROOT` | `/proc` | procfs mount point |
 | `--state-dir` | `CHECK_PUMA_STATE_DIR` | `/var/cache/sensu/sensu-agent` | Directory of the state file of the grace delays |
 
-A threshold set to 0 disables its test. Lists (`--state-glob`, `--expect`) are repeatable or comma separated, also in their environment variable. A missing `--state-glob` or an invalid pattern is UNKNOWN.
+A threshold set to 0 disables its test. Lists (`--state-glob`, `--control`, `--expect`) are repeatable or comma separated, also in their environment variable; `none` stands for an empty `--state-glob` or `--control` list. Neither `--state-glob` nor `--control`, an invalid pattern or control app is UNKNOWN.
 
 ## Check definition
 
@@ -144,7 +171,7 @@ Naming rule: an annotation is named after its environment variable, lowercased, 
 
 Every annotation is optional: each token has an explicit, non-empty `default` in the check definition, matching the plugin defaults, so a host without annotations runs the check with the values below. Never use `| default ""`: Sensu rejects an empty environment variable, and the agent then silently drops the check. `puma_expect` therefore defaults to `*`, every running instance.
 
-Lists (`puma_expect`, `puma_state_glob`) are comma separated.
+Lists (`puma_expect`, `puma_state_glob`, `puma_control`) are comma separated. `puma_state_glob` and `puma_control` default to a glob and `none`: a host with control apps only sets `puma_control` (and `puma_state_glob: none` if it has no state file at all).
 
 Annotations, e.g. in the agent configuration (`/etc/sensu/agent.yml`):
 
@@ -152,6 +179,7 @@ Annotations, e.g. in the agent configuration (`/etc/sensu/agent.yml`):
 annotations:
   puma_expect: "myapp_prod,myapp_api_prod"   # names must run, patterns allowed (*_prod), default * (all)
   puma_state_glob: "/home/deploy/*/shared/tmp/pids/puma.state,/var/www/*/shared/tmp/pids/puma.state"
+  puma_control: "9293,9294"                  # control apps without state file, default none
   puma_min_workers: "2"                      # default 2
   puma_busy_warn: "80"                       # %, default 80
   puma_busy_crit: "95"                       # %, default 95
@@ -178,6 +206,7 @@ spec:
   env_vars:
     - CHECK_PUMA_EXPECT={{ .annotations.puma_expect | default "*" }}
     - CHECK_PUMA_STATE_GLOB={{ .annotations.puma_state_glob | default "/home/deploy/*/shared/tmp/pids/puma.state" }}
+    - CHECK_PUMA_CONTROL={{ .annotations.puma_control | default "none" }}
     - CHECK_PUMA_MIN_WORKERS={{ .annotations.puma_min_workers | default "2" }}
     - CHECK_PUMA_BUSY_WARN={{ .annotations.puma_busy_warn | default "80" }}
     - CHECK_PUMA_BUSY_CRIT={{ .annotations.puma_busy_crit | default "95" }}

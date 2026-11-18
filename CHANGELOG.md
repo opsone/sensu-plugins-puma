@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `--control` (`CHECK_PUMA_CONTROL`): control apps given directly (port on `127.0.0.1`, `tcp://host:port`, `unix:///path`), without state file, matched to the instances by worker PID. Queried only for the instances without state file. Meant for `activate_control_app … no_token: true, data_only: true`.
+- `--control-token` (`CHECK_PUMA_CONTROL_TOKEN`): token of the `--control` apps, when started without `no_token`.
+- `none` stands for an empty `--state-glob` or `--control` list, for the check definitions.
+
+### Changed
+- `--state-glob` is only required without `--control`.
+- An unreachable `--control` app is a WARNING when a checked instance has no stats, like an unreadable state file. The summary counts them as `stats source issue(s)` (was `state file issue(s)`).
+
 ## [0.4.0] - 2026-11-11
 
 ### Added

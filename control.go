@@ -64,6 +64,34 @@ func ReadState(path string) (State, error) {
 	return st, nil
 }
 
+// ParseControl turns a --control value, a port on 127.0.0.1 or a tcp://host:port or unix:///abs/path
+// URL, into a control URL.
+func ParseControl(v string) (string, error) {
+	if port, err := strconv.Atoi(v); err == nil {
+		if port < 1 || port > 65535 {
+			return "", fmt.Errorf("port %d out of range", port)
+		}
+		return "tcp://127.0.0.1:" + strconv.Itoa(port), nil
+	}
+	u, err := url.Parse(v)
+	if err != nil {
+		return "", err
+	}
+	switch u.Scheme {
+	case "tcp":
+		if u.Hostname() == "" || u.Port() == "" || (u.Path != "" && u.Path != "/") {
+			return "", errors.New("want tcp://host:port")
+		}
+	case "unix":
+		if u.Host != "" || !filepath.IsAbs(u.Path) {
+			return "", errors.New("want unix:///absolute/path")
+		}
+	default:
+		return "", errors.New("want a port, tcp://host:port or unix:///absolute/path")
+	}
+	return v, nil
+}
+
 // Stats is the cluster mode answer of the control app /stats endpoint.
 type Stats struct {
 	StartedAt     time.Time      `json:"started_at"`
@@ -99,7 +127,7 @@ func (t ThreadStatus) Busy() int {
 	return max(t.MaxThreads-t.PoolCapacity, 0)
 }
 
-// FetchStats queries the control app found in the state file. Supports unix:// and tcp:// control URLs.
+// FetchStats queries a control app, found in a state file or given with --control. Supports unix:// and tcp:// control URLs.
 func FetchStats(ctx context.Context, st State) (*Stats, error) {
 	u, err := url.Parse(st.ControlURL)
 	if err != nil {
@@ -128,7 +156,11 @@ func FetchStats(ctx context.Context, st State) (*Stats, error) {
 		return nil, fmt.Errorf("unsupported control_url scheme %q", u.Scheme)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/stats?token="+url.QueryEscape(st.ControlAuthToken), nil)
+	path := "/stats"
+	if st.ControlAuthToken != "" { // empty: control app started with no_token
+		path += "?token=" + url.QueryEscape(st.ControlAuthToken)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 	if err != nil {
 		return nil, err
 	}

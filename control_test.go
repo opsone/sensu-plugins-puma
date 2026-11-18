@@ -129,3 +129,23 @@ func checkStats(t *testing.T, s *Stats) {
 		t.Errorf("worker 0 busy = %d, want 3", busy)
 	}
 }
+
+func TestParseControl(t *testing.T) {
+	for in, want := range map[string]string{
+		"9293":                      "tcp://127.0.0.1:9293",
+		"tcp://10.0.0.5:9293":       "tcp://10.0.0.5:9293",
+		"unix:///run/puma/ctl.sock": "unix:///run/puma/ctl.sock",
+		"0":                         "",
+		"70000":                     "",
+		"9293-9295":                 "",
+		"tcp://127.0.0.1":           "",
+		"unix://tmp/ctl.sock":       "",
+		"http://127.0.0.1:9293":     "",
+		"127.0.0.1:9293":            "",
+	} {
+		got, err := ParseControl(in)
+		if got != want || (err == nil) != (want != "") {
+			t.Errorf("ParseControl(%q) = %q, %v, want %q", in, got, err, want)
+		}
+	}
+}

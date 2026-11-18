@@ -12,9 +12,10 @@ trap 'docker stop -t 1 "$container" >/dev/null' EXIT
 
 dx() { docker exec "$container" "$@"; }
 
-start() { # <tag> <directory> <port> [control port]
+start() { # <tag> <directory> <port> [control port] [VAR=value...]
   local env=(-e PORT="$3")
   [[ -n ${4:-} ]] && env+=(-e PUMA_CONTROL_PORT="$4")
+  for v in "${@:5}"; do env+=(-e "$v"); done
   docker exec -d -w "$2" "${env[@]}" "$container" puma -C config/puma.rb --tag "$1"
 }
 
@@ -33,8 +34,11 @@ echo "$(dx puma --version)"
 # Staging runs without control app: the check falls back on process checks.
 start myapp_prod /srv/myapp-production 3000 9293
 start myapp_staging /srv/myapp-staging 3001
+# API: control app without state file nor token, given with --control.
+start myapp_api_prod /srv/myapp-api 3002 9294 PUMA_NO_STATE=1
 wait_workers myapp_prod
 wait_workers myapp_staging
+wait_workers myapp_api_prod
 sleep 2 # first checkin of the workers
 
 failures=0
@@ -73,6 +77,13 @@ expect 0 -s '/nowhere/*/puma.state' --expect myapp_prod
 # lists, expect pattern).
 expect 0 CHECK_PUMA_STATE_GLOB="/home/deploy/*/shared/tmp/pids/puma.state,$glob" CHECK_PUMA_EXPECT='*_prod'
 expect 2 CHECK_PUMA_STATE_GLOB="$glob" CHECK_PUMA_EXPECT='*_prod,other_prod'
+
+# Control apps given with --control, matched to the instances by worker PID. 9295: nothing listens.
+expect 0 -c 9294 --expect myapp_api_prod
+expect 0 CHECK_PUMA_CONTROL='9294,9295' CHECK_PUMA_STATE_GLOB="$glob" CHECK_PUMA_EXPECT='*_prod'
+# myapp_prod without stats source (no --state-glob, 9293 needs its token): 9295 may be its one.
+expect 1 -c 9294,9295 --expect myapp_prod,myapp_api_prod
+expect 3 -c 9293-9295 --expect myapp_prod
 
 # data_only: the control app refuses the commands changing the server state.
 token=$(dx sed -n 's/^control_auth_token: *//p' /srv/myapp-production/tmp/pids/puma.state)
