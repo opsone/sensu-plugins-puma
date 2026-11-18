@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.0] - 2026-11-18
 
 ### Added
 - `--control` (`CHECK_PUMA_CONTROL`): control apps given directly (port on `127.0.0.1`, `tcp://host:port`, `unix:///path`), without state file, matched to the instances by worker PID. Queried only for the instances without state file. Meant for `activate_control_app … no_token: true, data_only: true`.
