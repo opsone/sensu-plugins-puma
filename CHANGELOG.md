@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.1] - 2026-11-18
 
 ### Changed
 - README: the configuration for Puma before 7.2 no longer sets `data_only`, ignored by these versions.
